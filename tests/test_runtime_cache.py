@@ -132,16 +132,25 @@ class RuntimeRefreshTests(unittest.TestCase):
         from retrofetch.selection_index import build_index
         build_index(self.data)
         before = (self.data / 'selection.v2.idx').read_bytes()
+        catalog = self.data / 'catalog.json'
+        changed = json.loads(catalog.read_text())
+        changed['animations'][0]['name'] = 'different candidate'
+        catalog.write_text(json.dumps(changed))
+        published = []
         real = os.replace
         def fail(source, destination):
             if Path(destination) == self.state:
                 raise OSError('publication failed')
+            if Path(destination) == self.data / 'selection.v2.idx':
+                published.append(Path(source).read_bytes())
             return real(source, destination)
         with patch('retrofetch.rendering.supports_animation', return_value=True), \
                 patch('retrofetch.runtime_cache.os.replace', side_effect=fail):
             with self.assertRaises(OSError):
                 refresh_runtime(self.data, state_file=self.state)
         self.assertEqual((self.data / 'selection.v2.idx').read_bytes(), before)
+        self.assertNotEqual(published[0], before)
+        self.assertEqual(published[-1], before)
         self.assertFalse(self.state.exists())
 
     def test_success_publishes_both_outputs_and_reuses_owned_state(self):
