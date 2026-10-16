@@ -11,7 +11,7 @@ import tempfile
 from urllib.parse import unquote, urlsplit
 from .gif import GifError, inspect_gif, decode_gif, remove_uniform_matte
 from .catalog import Catalog
-SUFFIX = re.compile('_(?:lb|lc|lw|mc|sc|tc|blk|clr|wht|b|c|w)$', re.I)
+SUFFIX = re.compile('_(?:[lmst][bcw]|blk|clr|wht|b|c|w)$', re.I)
 NOTICE = re.compile('^(?:readme|use|licen[cs]e|copyright|legal)(?:[_. -].*)?$', re.I)
 
 
