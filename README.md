@@ -19,7 +19,8 @@ sh install.sh
 
 The installer downloads approximately 1.7 GB from Internet Archive and prepares
 the library upfront. Expect several GB of free space and substantial preparation
-time; the development import took about 31 minutes. Nothing downloads or converts
+time; the development import took about 31 minutes, followed by about 68 minutes
+of normalization. Nothing downloads or converts
 during terminal startup. Code installs into `~/.local`, assets into XDG data home.
 Ensure `~/.local/bin` is on your `PATH`.
 
@@ -37,7 +38,8 @@ retrofetch --list                  # list selectable IDs
 retrofetch --categories
 retrofetch --include animals --exclude '*/spiders'
 retrofetch --size 20x10
-retrofetch --calibrate-layout       # once inside Kitty after preparation
+retrofetch --calibrate-layout --layout-mode fixed-height  # stable module height
+retrofetch --refresh-runtime       # refresh index/capabilities, without conversion
 retrofetch --file /path/to/animation.gif
 ```
 
@@ -53,13 +55,16 @@ tmux/screen passthrough.
 
 Artwork is normalized upfront onto a common 160×160 transparent canvas, with a
 20×10-cell maximum display box and no upscaling. Existing libraries can run
-`retrofetch --normalize`, then calibrate once for the current Fastfetch layout.
-Startup uses a read-only selection index, never runtime normalization or calibration.
+`retrofetch --normalize`, then explicitly calibrate. Fixed-height calibration
+survives tiling and font changes; use the default width-sensitive mode when output
+height depends on available columns. Recalibrate after module-height changes.
+Startup uses a checksummed read-only index and cached native capabilities, never
+runtime normalization or calibration. See [measured performance](docs/library-report.md#completion-measurements).
 
 ## Library and source rights
 
 The verified development library contains **20,554 eligible animation entries**
-sharing **20,284 unique GIFs**. Larger opaque variants are tried conservatively;
+sharing **20,283 normalized GIFs**, with all **20,284 originals** retained. Larger opaque variants are tried conservatively;
 unsuitable conversions fall back to usable transparent variants. Corrupt,
 ambiguous, and visually static results are excluded. See
 [preparation rules](docs/importing.md) and [the verification report](docs/library-report.md).

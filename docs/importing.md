@@ -65,6 +65,8 @@ colors are rejected as ambiguous. Conversion is re-decoded to verify timing,
 transparency, visible motion, and exact retained foreground pixels. It never
 upscales. If conversion fails, a smaller validated transparent source is copied
 byte-for-byte; otherwise the family is excluded with diagnostic reasons.
+Converted GIFs retain frame delays and use infinite looping. Unconverted source
+files remain byte-for-byte originals; terminal-side playback requests looping.
 
 These conservative checks are not a universal aesthetic guarantee. They do not
 attempt paired-background registration or fuzzy color removal; antialiased and
