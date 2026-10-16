@@ -18,10 +18,11 @@ PYTHONPATH=src python3 -m retrofetch --help
 rewriting it. Normal invocation loads Fastfetch's usual configuration. Color
 handling is entirely Fastfetch's responsibility.
 
-`--size COLSxROWS` is a bounding box, clamped to the screen. Default bounds are
-one-third of terminal width and half its height. Pixel geometry comes from the
+`--size COLSxROWS` is a maximum box, clamped to the screen. Default bounds are
+**20 columns by 10 rows**, without enlarging small source pixels. Pixel geometry comes from the
 terminal; when unavailable, sizing assumes 8x16-pixel cells. Aspect ratio is
-preserved. Animation-only mode does not enlarge small source images.
+preserved. Extremely thin explicit GIFs that would shrink below one pixel fail
+explicitly rather than silently displaying Fastfetch's builtin logo.
 
 `--startup` skips noninteractive/non-Kitty/multiplexed contexts silently and
 suppresses Retrofetch diagnostics. It does not install a startup hook. Explicit

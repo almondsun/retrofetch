@@ -1,11 +1,30 @@
 """Finite native rendering calls; the terminal owns ongoing playback."""
 
 import fcntl
+import math
 from pathlib import Path
 import shlex
 import struct
 import subprocess
 import termios
+
+
+DEFAULT_BOX = (20, 10)
+
+
+def display_geometry(width, height, geometry, size=None):
+    """Fit native pixels to a maximum box; terminal cells are not square."""
+    columns, rows, cell_width, cell_height = geometry
+    box_width, box_height = size or DEFAULT_BOX
+    box_width = max(1, min(box_width, columns - 1))
+    box_height = max(1, min(box_height, rows - 2))
+    scale = min(1.0, box_width * cell_width / width,
+                box_height * cell_height / height)
+    # Width zero tells Fastfetch to retain native pixels for sub-cell images.
+    display_width = int(width * scale / cell_width)
+    pixel_width = display_width * cell_width if display_width else width * scale
+    display_height = max(1, math.ceil(pixel_width * height / width / cell_height))
+    return box_width, box_height, display_width, display_height
 
 
 def terminal_geometry():
@@ -51,14 +70,13 @@ def supports_animation():
                     for feature in ("imagemagick6", "imagemagick7")))
 
 
-def render(path, *, animation_only=False, size=None, fastfetch_config=None):
+def render(path, *, animation_only=False, size=None, fastfetch_config=None, quiet=False):
     """Render an explicit GIF; raise on failure so the CLI owns fallback."""
     path = Path(path).expanduser().resolve(strict=True)
     width, height = image_size(path)
-    columns, rows, cell_width, cell_height = terminal_geometry()
-    box_width, box_height = size or (max(1, columns // 3), max(1, rows // 2))
-    box_width, box_height = min(box_width, columns - 1), min(box_height, rows - 2)
-    display_width = max(1, min(box_width, int(box_height * cell_height * width / height / cell_width)))
+    geometry = terminal_geometry()
+    columns, rows, cell_width, cell_height = geometry
+    box_width, box_height, display_width, display_height = display_geometry(width, height, geometry, size)
     if animation_only:
         command = [
             "kitten", "icat", "--engine=builtin", "--stdin=no", "--align=left",
@@ -68,6 +86,9 @@ def render(path, *, animation_only=False, size=None, fastfetch_config=None):
             str(path),
         ]
     else:
+        pixel_width = display_width * cell_width if display_width else min(width, box_height * cell_height * width / height)
+        if min(pixel_width, pixel_width * height / width) < 1:
+            raise RuntimeError("GIF aspect ratio cannot fit native pixel bounds; normalize the artwork upfront")
         if not supports_animation():
             raise RuntimeError("Fastfetch needs Kitty animation and ImageMagick support")
         # Fastfetch expands logo sources using wordexp on Linux. Quote for that
@@ -75,6 +96,7 @@ def render(path, *, animation_only=False, size=None, fastfetch_config=None):
         command = [
             "fastfetch", "--logo-type", "kitty", "--logo", shlex.quote(str(path)),
             "--logo-animation-frame", "0", "--logo-width", str(display_width),
+            "--logo-height", str(box_height if not display_width and height > box_height * cell_height else 0),
         ]
         if fastfetch_config is not None:
             command.extend(["--config", fastfetch_config])
