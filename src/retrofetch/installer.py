@@ -28,6 +28,8 @@ def prepare_library(source, data_dir, *, progress=None):
     report = prepare(source, data_dir, progress=progress)
     report['normalization'] = normalize_library(data_dir, progress=progress)
     build_index(data_dir)
+    from .runtime_cache import refresh_capabilities
+    refresh_capabilities()
     return report
 
 

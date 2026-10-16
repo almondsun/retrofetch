@@ -64,3 +64,23 @@ back to the canonical catalog, never a runtime rebuild.
 contexts skip silently; incompatible explicit options still fail. See the
 [opt-in examples](../examples/startup.bash) and installation guide. No command
 automatically edits shell or Fastfetch configuration.
+
+## Refresh runtime metadata
+
+`retrofetch --refresh-runtime` explicitly rebuilds the selection accelerator and
+checks the installed Fastfetch animation capabilities without converting assets.
+Preparation, normalization and installation also refresh this metadata upfront.
+Normal rendering only reads it; missing or stale capability metadata falls back
+to live capability checks without writing state. Fastfetch upgrades invalidate
+the cached result.
+
+For a viewport-independent information height, explicitly choose:
+
+```sh
+retrofetch --calibrate-layout --layout-mode fixed-height
+```
+
+The conservative default is `--layout-mode width-sensitive`, which retains
+measurements for calibrated information widths. Fixed-height is a promise about
+module output, not an automatic consequence of disabling wrapping. Recalibrate
+when modules change their output height. No Fastfetch configuration is edited.

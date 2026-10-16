@@ -90,7 +90,11 @@ def render(path, *, animation_only=False, size=None, fastfetch_config=None, quie
         pixel_width = display_width * cell_width if display_width else min(width, box_height * cell_height * width / height)
         if min(pixel_width, pixel_width * height / width) < 1:
             raise RuntimeError("GIF aspect ratio cannot fit native pixel bounds; normalize the artwork upfront")
-        if not supports_animation():
+        from .runtime_cache import cached_capabilities
+        supported = cached_capabilities()
+        if supported is None:
+            supported = supports_animation()
+        if not supported:
             raise RuntimeError("Fastfetch needs Kitty animation and ImageMagick support")
         # Fastfetch expands logo sources using wordexp on Linux. Quote for that
         # parser as well as passing an argv list to avoid source substitution.
