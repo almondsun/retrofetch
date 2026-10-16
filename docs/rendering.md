@@ -24,6 +24,34 @@ terminal; when unavailable, sizing assumes 8x16-pixel cells. Aspect ratio is
 preserved. Extremely thin explicit GIFs that would shrink below one pixel fail
 explicitly rather than silently displaying Fastfetch's builtin logo.
 
+## Stable artwork and calibrated centering
+
+`retrofetch --normalize --data-dir PATH` prepares a common 160×160 transparent
+canvas from animation-wide foreground bounds; [originals remain available](normalization.md).
+Rendering never crops or converts assets during startup.
+
+Run `retrofetch --calibrate-layout` **inside Kitty** after normalization.
+`--fastfetch-config`, `--config`, and `--size` retain their normal precedence.
+Calibration executes modules once in a private PTY at the information-area width,
+without modifying Fastfetch configuration. Its reference lives in
+`${XDG_STATE_HOME:-~/.local/state}/retrofetch/layout.json`.
+
+For normalized canvases beside the information, top padding is
+`max(0, (reference_rows - rendered_canvas_rows) // 2)`. Existing horizontal
+padding and left/right/top placement remain Fastfetch's. Top placement receives
+no vertical offset; auto retains native minimum information width.
+
+Terminal geometry, size, config/search-file content, config environment, or
+Fastfetch binary changes invalidate the reference. Missing/stale state retains
+native placement; manual rendering gives a diagnostic and startup stays quiet.
+Recalibrate after module output height changes, including dynamic command output.
+Startup never measures modules twice or silently recalibrates.
+
+Calibration supports JSON/JSONC files. Extended JSON5 and named presets are
+rejected explicitly for calibration, not guessed; native rendering still accepts
+them without offsets. Explicit files receive bounded sizing; only normalized
+160×160 canvases receive the calibrated layout.
+
 `--startup` skips noninteractive/non-Kitty/multiplexed contexts silently and
 suppresses Retrofetch diagnostics. It does not install a startup hook. Explicit
 invalid options remain errors. Combined-mode rendering failures fall back to
