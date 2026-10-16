@@ -1,7 +1,7 @@
 # Rendering slice
 
-This slice renders an explicit local GIF. Catalog selection, importing,
-installation, and startup snippets are not implemented yet.
+The rendering boundary accepts either a catalog-selected animation or an explicit
+local GIF. See [usage](usage.md) for catalog, importing, installation and settings.
 
 ## Run from the checkout
 
@@ -34,7 +34,7 @@ Fastfetch may suppress graphics when `NO_COLOR` is set, even while returning
 success. Retrofetch does not unset it or force colors/graphics against the user's
 Fastfetch/environment policy.
 An explicit GIF's header is checked, but full animation/transparency validation
-belongs to the forthcoming importer. Do not treat arbitrary files as curated.
+belongs to the importer. Do not treat arbitrary explicit files as curated.
 
 ## Checks
 
@@ -43,10 +43,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 Automated tests capture/mock commands and do not prove visual behavior. Before
-accepting this rendering slice, check in actual Kitty: looping after the command
+accepting rendering changes, check in actual Kitty: looping after the command
 returns, correct prompt position, left/right/top Fastfetch layouts, no unexpected
 screen or scrollback clearing, scrolling, and disappearance on clear. These
-visual checks are pending; do not report them as passed.
+visual checks passed for the initial slice in isolated Kitty 0.49.2 with
+Fastfetch 2.69.0: left/right/top and animation-only, visible animation after
+helper exit, prompt below usable content, image scrolling away and clearing.
+Repeat these checks when changing the rendering boundary.
 
 Independent scratch-PTY probes confirmed both installed native helpers upload
 animation packets and return, without emitting screen/scrollback-clear sequences.
