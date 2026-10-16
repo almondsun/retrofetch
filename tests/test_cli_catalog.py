@@ -16,11 +16,14 @@ class CatalogCliTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         gif = b"GIF89a\x64\x00\x64\x00"
-        digest = hashlib.sha256(gif).hexdigest()
         (self.root / "animations").mkdir()
-        (self.root / "animations" / (digest + ".gif")).write_bytes(gif)
+        self.assets = {}
         entries = []
         for name, category in (("dog", "animals/dogs"), ("computer", "technology")):
+            contents = gif + name.encode()
+            digest = hashlib.sha256(contents).hexdigest()
+            self.assets[name] = self.root / "animations" / (digest + ".gif")
+            self.assets[name].write_bytes(contents)
             entries.append(dict(id="d1/" + category + "/" + name, name=name,
                                 path="animations/" + digest + ".gif", width=100,
                                 height=100, frames=2, sha256=digest,
@@ -54,7 +57,7 @@ class CatalogCliTests(unittest.TestCase):
                      ("--exclude", "technology")):
             code, render = self.invoke(*args)
             self.assertEqual(code, 0)
-            self.assertTrue(render.call_args.args[0].is_file())
+            self.assertEqual(render.call_args.args[0], self.assets["dog"])
         code, render = self.invoke("dog", "--exclude", "animals")
         self.assertEqual(code, 1)
         render.assert_not_called()
@@ -65,6 +68,7 @@ class CatalogCliTests(unittest.TestCase):
         before = config.read_bytes()
         code, render = self.invoke("--config", str(config), "--size", "12x6", "--include", "animals")
         self.assertEqual(code, 0)
+        self.assertEqual(render.call_args.args[0], self.assets["dog"])
         self.assertEqual(render.call_args.kwargs["size"], (12, 6))
         self.assertEqual(render.call_args.kwargs["fastfetch_config"], "original.jsonc")
         self.assertEqual(config.read_bytes(), before)
