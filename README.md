@@ -37,6 +37,7 @@ retrofetch --list                  # list selectable IDs
 retrofetch --categories
 retrofetch --include animals --exclude '*/spiders'
 retrofetch --size 20x10
+retrofetch --calibrate-layout       # once inside Kitty after preparation
 retrofetch --file /path/to/animation.gif
 ```
 
@@ -49,6 +50,11 @@ configuration, reconstruct modules, or manage colors. The terminal owns playback
 the prompt returns, animations scroll away normally, and clearing removes them.
 There is no background playback daemon. Rendering supports Kitty only, without
 tmux/screen passthrough.
+
+Artwork is normalized upfront onto a common 160×160 transparent canvas, with a
+20×10-cell maximum display box and no upscaling. Existing libraries can run
+`retrofetch --normalize`, then calibrate once for the current Fastfetch layout.
+Startup uses a read-only selection index, never runtime normalization or calibration.
 
 ## Library and source rights
 

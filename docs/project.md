@@ -21,7 +21,8 @@ Start with [usage](usage.md),
 | Selection | Entire usable library by default; optional category include/exclude filters. |
 | Fastfetch | Preserve the existing configuration, modules, information, and formatting; replace the logo. |
 | Colors | Entirely out of scope: no color settings, pinning, or automatic preservation. Changes to implicit logo-derived colors are acceptable. |
-| Sizing | Auto-fit while preserving aspect ratio, with a configurable size override. |
+| Sizing | Maximum 20×10 cells by default, no upscaling; stable 160×160 prepared canvas with configurable bounding box. |
+| Centering | Explicit calibration supplies native padding beside Fastfetch; no startup measurement or module reconstruction. |
 | Playback | Loop without waiting for playback to finish before returning the prompt. Finite decoding/upload time is still necessary. |
 | Lifecycle | Ordinary terminal output: scrolls away and disappears on clear, not pinned. |
 | Startup | Explicitly opt-in for Bash, Zsh, and Fish; installation does not modify shell startup files automatically. |

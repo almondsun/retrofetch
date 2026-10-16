@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import struct
 import subprocess
+import sys
 import termios
 
 
@@ -98,6 +99,13 @@ def render(path, *, animation_only=False, size=None, fastfetch_config=None, quie
             "--logo-animation-frame", "0", "--logo-width", str(display_width),
             "--logo-height", str(box_height if not display_width and height > box_height * cell_height else 0),
         ]
+        if (width, height) == (160, 160):
+            from .calibration import layout_padding
+            padding = layout_padding(fastfetch_config, size, geometry, display_height)
+            if padding is not None:
+                command.extend(['--logo-padding-top', str(padding)])
+            elif not quiet:
+                print('retrofetch: layout missing, stale, or top-positioned; native placement retained (run --calibrate-layout for side-by-side centering)', file=sys.stderr)
         if fastfetch_config is not None:
             command.extend(["--config", fastfetch_config])
     try:

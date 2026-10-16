@@ -21,6 +21,10 @@ detects transfer corruption; it is not an authenticity or licensing guarantee.
 Expect a roughly 1.6 GB download and several GB of temporary/extracted data.
 Installation can take substantial time; terminal startup never downloads or
 converts assets.
+Preparation also normalizes artwork onto a common 160×160 transparent canvas
+and builds a selection index. Existing libraries can run `retrofetch --normalize`
+instead of downloading/importing again; originals and the first catalog remain
+available. Normalization can take substantial upfront time, never startup time.
 
 Ensure `~/.local/bin` is already on your `PATH`, or invoke
 `~/.local/bin/retrofetch` directly. No privileged package installation occurs.
@@ -57,6 +61,10 @@ After installation, explicitly copy/source the appropriate guarded example from
 interactive shell configuration. Replace an existing explicit Fastfetch startup
 invocation yourself if necessary to avoid duplicate output. Installation makes
 none of these changes for you.
+
+Run `retrofetch --calibrate-layout` in Kitty once after preparation for centered
+native logos. Re-run after terminal/configuration/module-height changes; see
+[calibration details](rendering.md#stable-artwork-and-calibrated-centering).
 
 The examples require interactive Kitty, no tmux/screen, and an available
 `retrofetch` command. Unsupported startup contexts are skipped quietly.

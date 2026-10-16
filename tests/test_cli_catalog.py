@@ -79,10 +79,14 @@ class CatalogCliTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
 
     def test_prepare_and_validate_do_not_require_kitty(self):
-        with patch("retrofetch.importer.prepare_library", return_value={"animations": 1}) as prepare:
+        with patch("retrofetch.importer.prepare_library", return_value={"animations": 1}) as prepare, \
+                patch("retrofetch.normalization.normalize_library", return_value={"successes": 1}) as normalize, \
+                patch("retrofetch.selection_index.build_index", return_value={"entries": 1}) as build:
             code, render = self.invoke("--prepare", str(self.root), interactive=False)
         self.assertEqual(code, 0)
         prepare.assert_called_once()
+        normalize.assert_called_once()
+        build.assert_called_once_with(self.root)
         render.assert_not_called()
         with patch("retrofetch.importer.validate_library", return_value={"animations": 1, "files": 1}) as validate:
             code, _ = self.invoke("--validate", interactive=False)
