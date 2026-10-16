@@ -62,8 +62,10 @@ interactive shell configuration. Replace an existing explicit Fastfetch startup
 invocation yourself if necessary to avoid duplicate output. Installation makes
 none of these changes for you.
 
-Run `retrofetch --calibrate-layout` in Kitty once after preparation for centered
-native logos. Re-run after terminal/configuration/module-height changes; see
+Run `retrofetch --calibrate-layout --layout-mode fixed-height` in Kitty for a
+viewport-independent information block. This explicit contract reuses the row
+count across tiling/font changes; recalibrate after module-height changes. Use
+the default width-sensitive mode for wrapping or width-dependent output. See
 [calibration details](rendering.md#stable-artwork-and-calibrated-centering).
 
 The examples require interactive Kitty, no tmux/screen, and an available

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
-import tomllib
 
 
 @dataclass(frozen=True)
@@ -44,6 +43,7 @@ def load_settings(path: Path | None = None, environ=None):
         path = Path(_expand(str(path), env))
     try:
         with path.open('rb') as source:
+            import tomllib
             document = tomllib.load(source)
     except FileNotFoundError as error:
         if not explicit:

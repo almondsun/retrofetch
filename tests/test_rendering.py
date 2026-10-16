@@ -39,6 +39,7 @@ class RenderingTests(unittest.TestCase):
         env = {"TERM": "xterm-kitty"} if environment is None else environment
         with patch.dict(os.environ, env, clear=True), \
              patch("sys.stdout", self.output), patch("sys.stderr", self.errors), \
+             patch("retrofetch.runtime_cache.cached_capabilities", return_value=None), \
              patch("retrofetch.rendering.subprocess.run", side_effect=run), \
              patch("retrofetch.rendering.terminal_geometry", return_value=(120, 40, 10, 20)):
             code = main(list(args))

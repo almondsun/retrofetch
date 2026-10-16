@@ -41,12 +41,16 @@ def main(argv=None):
     modes.add_argument("--prepare", type=Path, metavar="SOURCE", help="prepare the full library upfront from an extracted collection")
     modes.add_argument("--validate", action="store_true", help="verify prepared catalog file hashes and GIF metadata")
     modes.add_argument("--normalize", action="store_true", help="normalize prepared animations upfront and rebuild their selection index")
+    modes.add_argument("--refresh-runtime", action="store_true", help="rebuild the selection index and refresh Fastfetch capability metadata without converting assets")
+    parser.add_argument("--layout-mode", choices=("fixed-height", "width-sensitive"), help="calibration contract: fixed-height reuses rows across tiling/font changes; default: width-sensitive")
     modes.add_argument("--calibrate-layout", action="store_true", help="measure Fastfetch layout once for centered native logos; rerun after layout changes")
     args = parser.parse_args(argv)
     if args.animation_only and args.fastfetch_config:
         parser.error("--fastfetch-config cannot be used with --animation-only")
     discovery = args.list or args.search is not None or args.categories
-    maintenance = args.prepare is not None or args.validate or args.normalize
+    maintenance = args.prepare is not None or args.validate or args.normalize or args.refresh_runtime
+    if args.layout_mode and not args.calibrate_layout:
+        parser.error("--layout-mode requires --calibrate-layout")
     if args.file and args.animation:
         parser.error("choose either an animation name or --file")
     if (discovery or maintenance) and (args.animation or args.file or args.animation_only
@@ -61,8 +65,12 @@ def main(argv=None):
         parser.error("calibration cannot be combined with animation selection or startup")
     directory = args.data_dir.expanduser() if args.data_dir is not None else data_directory()
     if maintenance:
-        from .importer import prepare_library, validate_library
         try:
+            if args.refresh_runtime:
+                from .runtime_cache import refresh_runtime
+                report = refresh_runtime(directory)
+                print(json.dumps(report, sort_keys=True))
+                return 0 if report["capabilities"]["supported"] else 1
             if args.prepare or args.normalize:
                 def progress(done, total, family):
                     if done == 1 or done % 100 == 0 or done == total:
@@ -70,14 +78,18 @@ def main(argv=None):
                 from .normalization import normalize_library
                 from .selection_index import build_index
                 if args.prepare:
+                    from .importer import prepare_library
                     report = prepare_library(args.prepare, directory, progress=progress)
                     report['normalization'] = normalize_library(directory, progress=progress)
                 else:
                     report = normalize_library(directory, progress=progress)
                 build_index(directory)
+                from .runtime_cache import refresh_capabilities
+                refresh_capabilities()
                 print(json.dumps({key: value for key, value in report.items()
                                   if key not in ("selections", "exclusions")}, sort_keys=True))
             else:
+                from .importer import validate_library
                 print(json.dumps(validate_library(directory), sort_keys=True))
             return 0
         except (OSError, ValueError, RuntimeError) as error:
@@ -91,8 +103,9 @@ def main(argv=None):
             return 1
         try:
             settings = load_settings(args.config)
+            options = {"layout_mode": args.layout_mode} if args.layout_mode else {}
             report = calibrate_layout(args.fastfetch_config or settings.fastfetch_config,
-                                      args.size if args.size is not None else settings.size)
+                                      args.size if args.size is not None else settings.size, **options)
             print(json.dumps(report, sort_keys=True))
             return 0
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
