@@ -1,0 +1,56 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.x']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: false
+      - name: Install fixture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl pkg-config libpng-dev zlib1g-dev zsh fish
+          mkdir "$RUNNER_TEMP/imagemagick"
+          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 120 \
+            https://codeload.github.com/ImageMagick/ImageMagick/tar.gz/refs/tags/7.1.1-47 \
+            -o "$RUNNER_TEMP/imagemagick.tar.gz"
+          tar -xzf "$RUNNER_TEMP/imagemagick.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/imagemagick"
+          cd "$RUNNER_TEMP/imagemagick"
+          ./configure --prefix="$RUNNER_TEMP/imagemagick-install" --disable-shared --without-perl --without-x
+          make -j2
+          make install
+          echo "$RUNNER_TEMP/imagemagick-install/bin" >> "$GITHUB_PATH"
+      - name: Regression suite and shell syntax
+        env:
+          PYTHONPATH: src
+        run: |
+          magick -version
+          python -m unittest discover -s tests -v
+          bash -n examples/startup.bash
+          zsh -n examples/startup.zsh
+          fish -n examples/startup.fish
+      - name: Build and smoke-test code-only distributions
+        run: |
+          python -m pip install build
+          python -m build
+          python scripts/check_distribution.py dist/*
+          python -m venv "$RUNNER_TEMP/retrofetch-smoke"
+          "$RUNNER_TEMP/retrofetch-smoke/bin/python" -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/retrofetch-smoke/bin/retrofetch" --help
