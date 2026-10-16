@@ -22,7 +22,7 @@ Start with [usage](usage.md),
 | Fastfetch | Preserve the existing configuration, modules, information, and formatting; replace the logo. |
 | Colors | Entirely out of scope: no color settings, pinning, or automatic preservation. Changes to implicit logo-derived colors are acceptable. |
 | Sizing | Maximum 20×10 cells by default, no upscaling; stable 160×160 prepared canvas with configurable bounding box. |
-| Centering | Explicit calibration supplies native padding beside Fastfetch; no startup measurement or module reconstruction. |
+| Centering | Explicit fixed-height or width-sensitive calibration supplies native padding; fixed-height references survive tiling/font changes. No startup measurement or module reconstruction. |
 | Playback | Loop without waiting for playback to finish before returning the prompt. Finite decoding/upload time is still necessary. |
 | Lifecycle | Ordinary terminal output: scrolls away and disappears on clear, not pinned. |
 | Startup | Explicitly opt-in for Bash, Zsh, and Fish; installation does not modify shell startup files automatically. |
@@ -93,7 +93,7 @@ Resolve applicable permissions before public asset distribution.
 
 ## Verification and remaining risks
 
-- First validate native Fastfetch animation in actual Kitty: finite upload then
+- Repeat actual Kitty verification when the rendering boundary changes: finite upload then
   ongoing playback, left/right/top placement, sizing, prompt position, scrolling,
   clearing, and preservation of existing scrollback.
 - Capability-check dependencies instead of assuming all distro packages match
