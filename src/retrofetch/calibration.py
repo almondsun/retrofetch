@@ -10,6 +10,7 @@ import pty
 import re
 import select
 import shutil
+import stat
 import struct
 import subprocess
 import tempfile
@@ -37,7 +38,7 @@ def _jsonc(text):
 
 
 def _config_files(config):
-    if config == 'none':
+    if config == 'none' or (config is None and 'NO_CONFIG' in os.environ):
         return []
     if config is not None:
         path = Path(config).expanduser().absolute()
@@ -70,14 +71,19 @@ def _snapshots(files):
     return values
 
 
-def _key(config, size, geometry, files):
+def _key(config, files):
     executable = shutil.which('fastfetch')
-    stat = Path(executable).stat() if executable else None
+    binary = Path(executable).resolve(strict=True) if executable else None
+    stat = binary.stat() if binary else None
     return {'config': str(Path(config).expanduser().absolute()) if config not in (None, 'none') else config,
-            'environment': [os.environ.get(k) for k in ('HOME', 'XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS')],
-            'geometry': list(geometry), 'size': list(size or DEFAULT_BOX), 'profile': [1, 160, 160],
-            'files': _snapshots(files),
-            'executable': [executable, stat.st_size, stat.st_mtime_ns] if stat else None}
+            'environment': {name: os.environ.get(name) for name in
+                            ('HOME', 'XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS', 'TERM',
+                             'COLORTERM', 'CLICOLOR', 'CLICOLOR_FORCE')},
+            # Fastfetch tests presence, not truthiness, of NO_COLOR.
+            'no_color': 'NO_COLOR' in os.environ, 'no_config': 'NO_CONFIG' in os.environ,
+            'profile': [2, 160, 160], 'files': _snapshots(files),
+            'executable': [str(binary), stat.st_dev, stat.st_ino, stat.st_size,
+                           stat.st_mtime_ns, stat.st_ctime_ns] if stat else None}
 
 
 def _logo(files, columns, logo_width):
@@ -172,58 +178,166 @@ def _measure(config, columns, geometry):
         error_file.close()
 
 
-def calibrate_layout(config=None, size=None, *, geometry=None, state_file=None):
-    geometry = geometry or terminal_geometry()
-    path = Path(state_file) if state_file is not None else _state_file()
-    files = _config_files(config)
-    key = _key(config, size, geometry, files)
+MAX_STATE_BYTES = 128 * 1024
+MAX_PROFILES = 64
+MODES = ('fixed-height', 'width-sensitive')
+
+
+def _safe_state(path):
+    path = Path(path).absolute()
+    if any(item.is_symlink() for item in (path, *path.parents)):
+        raise ValueError('Calibration state must not use symlinks')
+    return path
+
+
+def _read_state(path):
+    path = _safe_state(path)
+    if not path.exists():
+        return None, None
+    if not path.is_file() or path.stat().st_size > MAX_STATE_BYTES:
+        raise ValueError('Calibration state must be a bounded regular file')
+    raw = path.read_bytes()
+    if len(raw) > MAX_STATE_BYTES:
+        raise ValueError('Calibration state exceeds limit')
+    try:
+        document = json.loads(raw)
+    except ValueError as error:
+        raise ValueError('Refusing to replace unrecognized calibration state') from error
+    if not isinstance(document, dict) or document.get('owner') != OWNER:
+        raise ValueError('Refusing to replace unrecognized calibration state')
+    version = document.get('version')
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError('Unrecognized calibration version')
+    if version == 1:
+        if (not isinstance(document.get('key'), dict)
+                or type(document.get('reference_rows')) is not int
+                or not 1 <= document['reference_rows'] <= 10000
+                or document.get('position') not in ('left', 'right', 'top')):
+            raise ValueError('Malformed legacy calibration state')
+        return document, raw
+    profiles = document.get('profiles')
+    if not isinstance(profiles, list) or len(profiles) > MAX_PROFILES:
+        raise ValueError('Invalid calibration profiles')
+    for profile in profiles:
+        if (not isinstance(profile, dict) or profile.get('mode') not in MODES
+                or not isinstance(profile.get('key'), dict)
+                or type(profile.get('reference_rows')) is not int
+                or not 1 <= profile['reference_rows'] <= 10000):
+            raise ValueError('Invalid calibration profile')
+        columns = profile.get('information_columns')
+        if ((profile['mode'] == 'fixed-height' and columns is not None)
+                or (profile['mode'] == 'width-sensitive'
+                    and (type(columns) is not int or not 1 <= columns <= 65535))):
+            raise ValueError('Invalid calibration information width')
+        snapshots = profile['key'].get('files')
+        if (not isinstance(snapshots, list) or len(snapshots) > 64
+                or any(not isinstance(item, list) or len(item) != 2
+                       or not isinstance(item[0], str) or not Path(item[0]).is_absolute()
+                       or (item[1] is not None and
+                           (not isinstance(item[1], str) or not re.fullmatch('[0-9a-f]{64}', item[1])))
+                       for item in snapshots)):
+            raise ValueError('Invalid calibration configuration snapshots')
+    return document, raw
+
+
+def _information_area(files, geometry, size):
     _, _, width, _ = display_geometry(160, 160, geometry, size)
     position, horizontal_padding = _logo(files, geometry[0], width)
     columns = geometry[0] if position == 'top' else max(1, geometry[0] - width - horizontal_padding)
+    return position, columns
+
+
+def calibrate_layout(config=None, size=None, *, geometry=None, state_file=None,
+                     layout_mode='width-sensitive'):
+    """Serialize explicit maintenance; startup only reads the atomic state file."""
+    path = _safe_state(Path(state_file) if state_file is not None else _state_file())
+    _read_state(path)  # Reject unknown state before creating maintenance files.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _safe_state(path.with_name(path.name + '.lock'))
+    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, 'a') as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise ValueError('Calibration lock must be a regular file')
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError('Another calibration is running') from error
+        return _calibrate_locked(config, size, geometry=geometry, state_file=path,
+                                 layout_mode=layout_mode)
+
+
+def _calibrate_locked(config=None, size=None, *, geometry=None, state_file=None,
+                      layout_mode='width-sensitive'):
+    """Measure once, explicitly asserting either a width or stable-height contract."""
+    if layout_mode not in MODES:
+        raise ValueError('layout mode must be fixed-height or width-sensitive')
+    geometry = geometry or terminal_geometry()
+    path = _safe_state(Path(state_file) if state_file is not None else _state_file())
+    previous, previous_raw = _read_state(path)
+    files = _config_files(config)
+    key = _key(config, files)
+    position, columns = _information_area(files, geometry, size)
+    backup = _safe_state(path.with_name(path.name + '.v1.bak'))
+    if previous and previous['version'] == 1 and backup.exists():
+        if not backup.is_file() or backup.stat().st_size > MAX_STATE_BYTES or backup.read_bytes() != previous_raw:
+            raise ValueError('Refusing to replace an unrelated legacy calibration backup')
     rows = _measure(config, columns, geometry)
     if type(rows) is not int or not 1 <= rows <= 10000:
         raise ValueError('Calibration did not produce a bounded information block')
-    document = {'owner': OWNER, 'version': 1, 'key': key, 'reference_rows': rows, 'position': position}
-    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
-        raise ValueError('Calibration state must not use symlinks')
-    if path.exists():
-        try:
-            previous = json.loads(path.read_text())
-        except (ValueError, OSError) as error:
-            raise ValueError('Refusing to replace unrecognized calibration state') from error
-        if not isinstance(previous, dict) or previous.get('owner') != OWNER:
-            raise ValueError('Refusing to replace unrecognized calibration state')
+    profile = {'mode': layout_mode, 'key': key, 'reference_rows': rows,
+               'information_columns': columns if layout_mode == 'width-sensitive' else None}
+    profiles = previous['profiles'] if previous and previous['version'] == 2 else []
+    # The most recently calibrated compatible contract wins, with bounded history.
+    profiles = [item for item in profiles if not (item['mode'] == layout_mode
+                and item['key'] == key and item['information_columns'] == profile['information_columns'])]
+    document = {'owner': OWNER, 'version': 2, 'profiles': (profiles + [profile])[-MAX_PROFILES:]}
+    encoded = (json.dumps(document) + '\n').encode()
+    if len(encoded) > MAX_STATE_BYTES:
+        raise ValueError('Calibration state exceeds limit; remove obsolete profiles explicitly')
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.layout-', dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as stream:
-            json.dump(document, stream)
-            stream.write('\n')
-        if _key(config, size, geometry, files) != key:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(encoded)
+        if _key(config, files) != key:
             raise ValueError('Configuration changed during calibration')
+        _safe_state(path)
+        _, current_raw = _read_state(path)
+        if current_raw != previous_raw:
+            raise ValueError('Calibration state changed during measurement')
+        if previous and previous['version'] == 1 and not backup.exists():
+            _safe_state(backup)
+            with backup.open('xb') as stream:
+                stream.write(previous_raw)
         os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
-    return {'reference_rows': rows, 'position': position, 'information_columns': columns, 'state_file': str(path)}
+    return {'reference_rows': rows, 'position': position, 'information_columns': columns,
+            'layout_mode': layout_mode, 'state_file': str(path)}
 
 
 def layout_padding(config, size, geometry, display_height, *, state_file=None):
+    """Read compatible profiles without executing modules or writing state."""
     path = Path(state_file) if state_file is not None else _state_file()
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 128 * 1024:
-            return None
-        document = json.loads(path.read_text())
-        if not isinstance(document, dict) or document.get('owner') != OWNER or document.get('version') != 1:
-            return None
-        rows = document.get('reference_rows')
-        if type(rows) is not int or not 1 <= rows <= 10000:
-            return None
-        key = document.get('key')
-        if not isinstance(key, dict) or not isinstance(key.get('files'), list):
-            return None
-        files = [record[0] for record in key['files'] if isinstance(record, list) and len(record) == 2]
-        if _key(config, size, geometry, files) != key or document.get('position') not in ('left', 'right'):
-            return None
-        return max(0, (rows - display_height) // 2)
-    except (OSError, ValueError, TypeError, KeyError):
+        document, _ = _read_state(path)
+        if document is None or document['version'] != 2:
+            return None  # Never promote a version-1 snapshot into a new contract.
+        current_keys = {}
+        for profile in reversed(document['profiles']):
+            key = profile['key']
+            files = [record[0] for record in key['files']]
+            identity = tuple(files)
+            if identity not in current_keys:
+                current_keys[identity] = _key(config, files)
+            if current_keys[identity] != key:
+                continue
+            position, columns = _information_area(files, geometry, size)
+            if position == 'top':
+                return None
+            if profile['mode'] == 'width-sensitive' and columns != profile['information_columns']:
+                continue
+            return max(0, (profile['reference_rows'] - display_height) // 2)
+        return None
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         return None
