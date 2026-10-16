@@ -32,6 +32,52 @@ def _category_matches(category, pattern):
     return category == pattern or category.startswith(pattern + '/') or fnmatchcase(category, pattern)
 
 
+def _entry_from_row(row, root):
+    """Validate metadata without touching any animation filesystem paths."""
+    if not isinstance(row, dict):
+        raise ValueError('Catalog animation must be an object')
+    for key in ('id', 'name', 'path', 'sha256'):
+        if not isinstance(row.get(key), str) or not row[key]:
+            raise ValueError(f'Animation {key} must be a nonempty string')
+    for key in ('width', 'height', 'frames'):
+        if type(row.get(key)) is not int or row[key] < (2 if key == 'frames' else 1):
+            raise ValueError(f'Animation {key} must be a positive integer (frames >= 2)')
+    if not re.fullmatch(r'[0-9a-f]{64}', row['sha256']):
+        raise ValueError('Animation sha256 must be 64 lowercase hexadecimal characters')
+    if row['path'] != 'animations/' + row['sha256'] + '.gif':
+        raise ValueError('Animation path must be animations/<sha256>.gif')
+    return Entry(row['id'], row['name'], root / row['path'], row['width'], row['height'],
+                 row['frames'], row['sha256'], _strings(row.get('categories'), 'categories'),
+                 _strings(row.get('aliases'), 'aliases'))
+
+
+def _entries_from_document(document, root):
+    if (not isinstance(document, dict) or type(document.get('version')) is not int
+            or document['version'] != 1 or not isinstance(document.get('animations'), list)):
+        raise ValueError('Catalog must contain version 1 and an animations list')
+    entries, identities = [], set()
+    for row in document['animations']:
+        entry = _entry_from_row(row, root)
+        identity = entry.id.casefold()
+        if identity in identities:
+            raise ValueError(f'Duplicate animation ID: {entry.id}')
+        identities.add(identity)
+        entries.append(entry)
+    return entries
+
+
+def _validate_selected(entry):
+    # Canonical lexical paths were checked when the record was loaded. Require
+    # that resolution changes no component, rejecting both leaf and directory
+    # symlinks, including ones added after loading the metadata.
+    try:
+        if entry.path.resolve(strict=True) != entry.path or not entry.path.is_file():
+            raise ValueError(f'Animation file is missing or changed: {entry.id}')
+    except OSError as error:
+        raise ValueError(f'Animation file is missing or changed: {entry.id}') from error
+    return entry
+
+
 class Catalog:
     def __init__(self, entries):
         self.entries = list(entries)
@@ -43,35 +89,7 @@ class Catalog:
             document = json.loads((root / 'catalog.json').read_text(encoding='utf-8'))
         except (OSError, ValueError) as error:
             raise ValueError(f'Cannot read catalog: {error}') from error
-        if (not isinstance(document, dict) or type(document.get('version')) is not int
-                or document['version'] != 1 or not isinstance(document.get('animations'), list)):
-            raise ValueError('Catalog must contain version 1 and an animations list')
-        entries, identities = [], set()
-        for row in document['animations']:
-            if not isinstance(row, dict):
-                raise ValueError('Catalog animation must be an object')
-            for key in ('id', 'name', 'path', 'sha256'):
-                if not isinstance(row.get(key), str) or not row[key]:
-                    raise ValueError(f'Animation {key} must be a nonempty string')
-            if row['id'].casefold() in identities:
-                raise ValueError(f'Duplicate animation ID: {row["id"]}')
-            identities.add(row['id'].casefold())
-            for key in ('width', 'height', 'frames'):
-                if type(row.get(key)) is not int or row[key] < (2 if key == 'frames' else 1):
-                    raise ValueError(f'Animation {key} must be a positive integer (frames >= 2)')
-            if not re.fullmatch(r'[0-9a-f]{64}', row['sha256']):
-                raise ValueError('Animation sha256 must be 64 lowercase hexadecimal characters')
-            expected = 'animations/' + row['sha256'] + '.gif'
-            if row['path'] != expected:
-                raise ValueError('Animation path must be animations/<sha256>.gif')
-            target = (root / row['path']).resolve()
-            if not target.is_relative_to(root):
-                raise ValueError('Animation path escapes the data directory')
-            entries.append(Entry(row['id'], row['name'], target, row['width'], row['height'],
-                                 row['frames'], row['sha256'],
-                                 _strings(row.get('categories'), 'categories'),
-                                 _strings(row.get('aliases'), 'aliases')))
-        return cls(entries)
+        return cls(_entries_from_document(document, root))
 
     def filtered(self, include=(), exclude=()):
         return [entry for entry in self.entries
@@ -102,10 +120,7 @@ class Catalog:
                 reason = 'Ambiguous animation' if matches else 'No matching animation'
                 raise ValueError(f'{reason}: {identifier}')
             selected = matches[0]
-        # Re-resolve on selection in case a file changed after loading.
-        if selected.path.resolve() != selected.path or not selected.path.is_file():
-            raise ValueError(f'Animation file is missing or changed: {selected.id}')
-        return selected
+        return _validate_selected(selected)
 
     def categories(self):
         return sorted({category for entry in self.entries for category in entry.categories})

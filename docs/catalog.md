@@ -33,7 +33,9 @@ or changes colors. CLI override handling belongs to the CLI integration layer.
 - Explicit selection matches canonical full IDs first, then aliases, then exact
   display names.
   Missing or ambiguous matches fail rather than silently selecting a different GIF.
-- Selection validates that the chosen file still exists. Catalog loading validates
+- Selection validates that the chosen file still exists and rejects symlinks in
+  its asset path, including directory symlinks and changes made after loading.
+  Catalog loading validates
   schema, geometry, animation frame count, IDs, digest shape, and safe paths,
   but does not hash every GIF at terminal startup.
 
