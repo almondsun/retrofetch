@@ -6,6 +6,7 @@ from pathlib import Path
 import random
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from retrofetch.catalog import Catalog
 
@@ -101,4 +102,31 @@ class CatalogTests(unittest.TestCase):
         self.file.unlink()
         self.file.symlink_to('/etc/passwd')
         with self.assertRaises(ValueError):
-            Catalog.load(self.root)
+            Catalog.load(self.root).select('Dog')
+
+    def test_load_does_not_resolve_unselected_asset_paths(self):
+        original = Path.resolve
+        resolved = []
+
+        def track(path, *args, **kwargs):
+            resolved.append(path)
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, 'resolve', track):
+            catalog = Catalog.load(self.root)
+        self.assertEqual(resolved, [self.root])
+        self.assertEqual(catalog.select('Dog').path, self.file)
+
+    def test_selection_rejects_in_root_asset_and_directory_symlinks(self):
+        catalog = Catalog.load(self.root)
+        real = self.root / 'original.gif'
+        self.file.rename(real)
+        self.file.symlink_to(real)
+        with self.assertRaises(ValueError):
+            catalog.select('Dog')
+        self.file.unlink()
+        real.rename(self.file)
+        (self.root / 'animations').rename(self.root / 'originals')
+        (self.root / 'animations').symlink_to(self.root / 'originals', target_is_directory=True)
+        with self.assertRaises(ValueError):
+            catalog.select('Dog')
