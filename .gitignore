@@ -1,0 +1,23 @@
+# Source staging and generated third-party data (not licensed by this repo).
+/temp/
+/data/*
+!/data/README.md
+
+# Python development and packaging artifacts.
+__pycache__/
+*.py[cod]
+/.venv/
+/venv/
+/build/
+/dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Rebuildable local skill-registry cache; keep the registry itself visible.
+/.atl/.skill-registry.cache.json
+
+# Machine-local agent tooling; generated registries contain absolute paths.
+/.atl/
+/.gga
