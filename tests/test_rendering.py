@@ -79,8 +79,30 @@ class RenderingTests(unittest.TestCase):
         code, calls = self.invoke("--file", str(self.gif), "--size", "12x8")
         self.assertEqual(code, 0)
         command = calls[-1][0]
-        self.assertEqual(command[command.index("--logo-width") + 1], "12")
-        self.assertNotIn("--logo-height", command)
+        self.assertEqual(command[command.index("--logo-width") + 1], "10")
+        self.assertEqual(command[command.index("--logo-height") + 1], "0")
+
+    def test_default_bounds_do_not_enlarge_small_images(self):
+        code, calls = self.invoke("--file", str(self.gif))
+        self.assertEqual(code, 0)
+        command = calls[-1][0]
+        self.assertEqual(command[command.index("--logo-width") + 1], "10")
+
+    def test_large_and_tall_images_fit_common_default_box(self):
+        for width, height, expected in ((2000, 1000, "20"), (100, 1000, "2")):
+            with self.subTest(width=width, height=height):
+                self.gif.write_bytes(b"GIF89a" + width.to_bytes(2, "little") + height.to_bytes(2, "little"))
+                code, calls = self.invoke("--file", str(self.gif))
+                self.assertEqual(code, 0)
+                command = calls[-1][0]
+                self.assertEqual(command[command.index("--logo-width") + 1], expected)
+
+    def test_unrenderable_extreme_aspect_ratio_falls_back_explicitly(self):
+        self.gif.write_bytes(b"GIF89a\x01\x00\xe8\x03")
+        code, calls = self.invoke("--file", str(self.gif))
+        self.assertEqual(code, 0)
+        self.assertEqual([call[0] for call in calls], [["fastfetch"]])
+        self.assertIn("aspect ratio", self.errors.getvalue())
 
     def test_render_failure_falls_back_and_propagates_fallback_exit(self):
         code, calls = self.invoke("--file", str(self.gif), results=iter([1, 7]))
