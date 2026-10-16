@@ -97,6 +97,15 @@ class RenderingTests(unittest.TestCase):
                 command = calls[-1][0]
                 self.assertEqual(command[command.index("--logo-width") + 1], expected)
 
+    def test_normalized_canvas_uses_saved_calibration_without_measurement(self):
+        self.gif.write_bytes(b"GIF89a\xa0\x00\xa0\x00")
+        with patch("retrofetch.calibration.layout_padding", return_value=10) as padding:
+            code, calls = self.invoke("--file", str(self.gif))
+        self.assertEqual(code, 0)
+        command = calls[-1][0]
+        self.assertEqual(command[command.index("--logo-padding-top") + 1], "10")
+        padding.assert_called_once_with(None, None, (120, 40, 10, 20), 8)
+
     def test_unrenderable_extreme_aspect_ratio_falls_back_explicitly(self):
         self.gif.write_bytes(b"GIF89a\x01\x00\xe8\x03")
         code, calls = self.invoke("--file", str(self.gif))

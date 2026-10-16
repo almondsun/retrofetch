@@ -13,6 +13,7 @@ retrofetch --categories                 # list available category paths
 retrofetch d1/animals/cats/cat           # select a listed canonical ID
 retrofetch --include animals --exclude '*/spiders'
 retrofetch --size 20x10
+retrofetch --calibrate-layout           # once, inside Kitty after preparation
 retrofetch --file /path/to/custom.gif    # bypass catalog selection
 ```
 
@@ -43,12 +44,21 @@ Use the existing extracted source collection without downloading again:
 PYTHONPATH=src python3 -m retrofetch --prepare temp --data-dir data
 PYTHONPATH=src python3 -m retrofetch --validate --data-dir data
 PYTHONPATH=src python3 -m retrofetch --list --data-dir data
+PYTHONPATH=src python3 -m retrofetch --normalize --data-dir data  # upgrade prepared assets
+PYTHONPATH=src python3 -m retrofetch --data-dir data  # render in Kitty
 ```
 
 Preparation is an upfront operation, never part of terminal startup. It reports
 progress and records provenance, selections, fallbacks, and exclusions. An
 all-invalid import fails without replacing an existing usable catalog. See
-[import rules](importing.md) and [source rights](project.md#source-acquisition-and-rights).
+[import rules](importing.md) and [source rights](installation.md#source-rights-and-optional-packaging).
+
+Public preparation/installation also normalize artwork and build the read-only
+random-selection index. Existing libraries use `--normalize` without original
+source material; originals are retained. See [normalization](normalization.md)
+and [calibrated centering](rendering.md#stable-artwork-and-calibrated-centering).
+The default maximum is 20×10 cells without upscaling. Missing/stale indexes fall
+back to the canonical catalog, never a runtime rebuild.
 
 `--startup` is for explicitly enabled shell hooks: unsupported/noninteractive
 contexts skip silently; incompatible explicit options still fail. See the

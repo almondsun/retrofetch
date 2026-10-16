@@ -23,7 +23,12 @@ class InstallationError(RuntimeError):
 def prepare_library(source, data_dir, *, progress=None):
     """Import lazily so renderer-only installations remain importable."""
     from .importer import prepare_library as prepare
-    return prepare(source, data_dir, progress=progress)
+    from .normalization import normalize_library
+    from .selection_index import build_index
+    report = prepare(source, data_dir, progress=progress)
+    report['normalization'] = normalize_library(data_dir, progress=progress)
+    build_index(data_dir)
+    return report
 
 
 def check_dependencies():
