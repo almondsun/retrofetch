@@ -96,6 +96,14 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(entry['sha256'], hashlib.sha256(clear.read_bytes()).hexdigest())
         self.assertEqual(result['conversions'], 0)
 
+    def test_orphan_medium_black_and_white_variants_share_the_family(self):
+        fixture(self.category / 'cat_mb.gif', opaque=True)
+        fixture(self.category / 'cat_mw.gif', opaque=True)
+        fixture(self.category / 'cat_mc.gif')
+        result = prepare_library(self.source, self.dest)
+        self.assertEqual(result['families'], 1)
+        self.assertEqual(result['successes'], 1)
+
     def test_partial_and_atomic_failure(self):
         fixture(self.category / 'a.gif')
         fixture(self.category / 'b.gif')
