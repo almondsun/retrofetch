@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 import random
+import struct
+import subprocess
+import sys
 import sqlite3
 import tempfile
 import unittest
@@ -32,6 +35,118 @@ class SelectionIndexTests(unittest.TestCase):
         self.catalog = self.root / 'catalog.json'
         self.catalog.write_text(json.dumps(dict(version=1, animations=self.rows)))
         self.index = self.root / INDEX_NAME
+
+    def legacy_index(self):
+        path = self.root / 'selection.sqlite3'
+        with sqlite3.connect(path) as connection:
+            connection.execute('PRAGMA application_id = 0x52544658')
+            connection.execute('CREATE TABLE metadata (version, catalog_sha256, entry_count)')
+            connection.execute('INSERT INTO metadata VALUES (1, ?, ?)',
+                               (hashlib.sha256(self.catalog.read_bytes()).hexdigest(), len(self.rows)))
+            connection.execute('CREATE TABLE animations (ordinal INTEGER PRIMARY KEY, payload TEXT)')
+            connection.executemany('INSERT INTO animations VALUES (?, ?)',
+                                   [(i, json.dumps(row)) for i, row in enumerate(self.rows)])
+        return path
+
+    def rewrite_binary(self, *, rows=None, header=None, offsets=None):
+        records = [json.dumps(row, separators=(',', ':')).encode() for row in
+                   (self.rows if rows is None else rows)]
+        positions = [0]
+        for record in records:
+            positions.append(positions[-1] + len(record))
+        fields = [b'RTFXIDX2', 2, len(records),
+                  hashlib.sha256(self.catalog.read_bytes()).digest(), positions[-1]]
+        if header:
+            for field, value in header.items():
+                fields[field] = value
+        body = (struct.pack('<8sII32sQ', *fields)
+                + struct.pack('<' + 'Q' * len(positions), *(positions if offsets is None else offsets))
+                + b''.join(records))
+        self.index.write_bytes(body + hashlib.sha256(body).digest())
+
+    def test_binary_build_is_deterministic_and_preserves_legacy(self):
+        legacy = self.legacy_index()
+        old = legacy.read_bytes()
+        report = build_index(self.root)
+        self.assertEqual(Path(report['index']).name, 'selection.v2.idx')
+        self.assertEqual(self.index.read_bytes()[:8], b'RTFXIDX2')
+        first = self.index.read_bytes()
+        build_index(self.root)
+        self.assertEqual(first, self.index.read_bytes())
+        self.assertEqual(old, legacy.read_bytes())
+
+    def test_binary_runtime_does_not_import_sqlite(self):
+        build_index(self.root)
+        code = ('import sys; from pathlib import Path; '
+                'from retrofetch.selection_index import select_random; '
+                'assert select_random(Path(sys.argv[1])) is not None; '
+                'assert "sqlite3" not in sys.modules; '
+                'assert "tempfile" not in sys.modules')
+        result = subprocess.run([sys.executable, '-c', code, str(self.root)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_legacy_only_when_binary_absent(self):
+        legacy = self.legacy_index()
+        self.assertIsNotNone(select_random(self.root))
+        self.index.write_bytes(b'invalid v2')
+        self.assertIsNone(select_random(self.root))
+        self.assertTrue(legacy.exists())
+
+    def test_checksum_truncation_and_rehashed_structure_rejected(self):
+        build_index(self.root)
+        original = self.index.read_bytes()
+        for contents in (original[:-1], original + b'x', original[:-1] + bytes([original[-1] ^ 1])):
+            self.index.write_bytes(contents)
+            self.assertIsNone(select_random(self.root))
+        for header in ({0: b'UNKNOWN!'}, {1: 3}, {2: 0}, {2: 1000001},
+                       {3: bytes(32)}, {4: 0}):
+            self.rewrite_binary(header=header)
+            self.assertIsNone(select_random(self.root), header)
+        for offsets in ([1, 2, 3, 4, 5, 6], [0, 0, 2, 3, 4, 5],
+                        [0, 2, 1, 3, 4, 5], [0, 1, 2, 3, 4, 2**64 - 1]):
+            self.rewrite_binary(offsets=offsets)
+            self.assertIsNone(select_random(self.root), offsets)
+
+    def test_binary_selected_schema_and_path_rejected_after_rehash(self):
+        for change in ({'path': '../outside.gif'}, {'width': True}, {'frames': 1}):
+            self.rewrite_binary(rows=[{**row, **change} for row in self.rows])
+            self.assertIsNone(select_random(self.root))
+
+    def test_bounded_index_and_record_rejected(self):
+        build_index(self.root)
+        with patch('retrofetch.selection_index.MAX_INDEX_BYTES', 32):
+            self.assertIsNone(select_random(self.root))
+        self.rewrite_binary(rows=[{**row, 'name': 'x' * (2 * 1024 * 1024)} for row in self.rows])
+        self.assertIsNone(select_random(self.root))
+
+    def test_nonregular_indexes_rejected_without_opening_fifo(self):
+        self.index.mkdir()
+        self.assertIsNone(select_random(self.root))
+        with self.assertRaises(ValueError):
+            build_index(self.root)
+        self.index.rmdir()
+        os.mkfifo(self.index)
+        self.assertIsNone(select_random(self.root))
+        with self.assertRaises(ValueError):
+            build_index(self.root)
+
+    def test_destination_created_during_build_is_preserved(self):
+        make_temp = tempfile.mkstemp
+        def create_unrelated(*args, **kwargs):
+            self.index.write_bytes(b'unrelated concurrent file')
+            return make_temp(*args, **kwargs)
+        with patch('tempfile.mkstemp', side_effect=create_unrelated), self.assertRaises(ValueError):
+            build_index(self.root)
+        self.assertEqual(self.index.read_bytes(), b'unrelated concurrent file')
+        self.assertFalse(list(self.root.glob('.selection-index-*')))
+
+    def test_catalog_change_during_build_does_not_publish(self):
+        contents = self.catalog.read_bytes()
+        with patch.object(Path, 'read_bytes', side_effect=[contents, contents + b' ']), self.assertRaises(ValueError):
+            build_index(self.root)
+        self.assertFalse(self.index.exists())
+        self.assertFalse(list(self.root.glob('.selection-index-*')))
 
     def test_uniform_ordinal_selection_matches_catalog_and_never_writes(self):
         report = build_index(self.root)
@@ -86,20 +201,20 @@ class SelectionIndexTests(unittest.TestCase):
                                      ('metadata', 'entry_count', 8),
                                      ('metadata', 'version', 9),
                                      ('metadata', 'catalog_sha256', '0' * 64)]:
-            if self.index.exists():
-                self.index.unlink()
-            build_index(self.root)
-            with sqlite3.connect(self.index) as connection:
+            legacy = self.root / 'selection.sqlite3'
+            legacy.unlink(missing_ok=True)
+            self.legacy_index()
+            with sqlite3.connect(legacy) as connection:
                 connection.execute(f'UPDATE {table} SET {column} = ?', (value,))
             self.assertIsNone(select_random(self.root), (table, column))
 
     def test_malicious_row_paths_rejected_without_touching_other_files(self):
         for path in ('../outside.gif', '/etc/passwd', 'animations/../escape.gif'):
-            if self.index.exists():
-                self.index.unlink()
-            build_index(self.root)
+            legacy = self.root / 'selection.sqlite3'
+            legacy.unlink(missing_ok=True)
+            self.legacy_index()
             row = {**self.rows[0], 'path': path}
-            with sqlite3.connect(self.index) as connection:
+            with sqlite3.connect(legacy) as connection:
                 connection.execute('UPDATE animations SET payload = ?', (json.dumps(row),))
             before = self.catalog.read_bytes()
             self.assertIsNone(select_random(self.root))

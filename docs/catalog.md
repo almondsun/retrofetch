@@ -41,18 +41,31 @@ or changes colors. CLI override handling belongs to the CLI integration layer.
 
 ## Fast random startup
 
-Preparation can explicitly build `selection.sqlite3` through
+Preparation explicitly builds `selection.v2.idx` through
 `retrofetch.selection_index.build_index(data_dir)`. Default unfiltered random
 selection may use `select_random(data_dir)`: it chooses a uniform ordinal,
 validates that record's metadata, and checks the selected asset path. Named
 selection, filters, and discovery continue using the canonical JSON catalog.
 
-The optional SQLite index records the exact catalog SHA-256, format version,
-and entry count. Startup hashes the catalog without parsing every row and opens
-the index read-only and immutable; it never rebuilds an index or creates a
-journal. Missing, stale, malformed, or unsafe indexes return no accelerated
-selection so the caller can use normal catalog selection. Index preparation
-stages updates atomically and refuses unrelated existing files.
+The deterministic binary index contains a fixed magic/version, entry count,
+canonical catalog SHA-256, payload length, an N+1 table of little-endian uint64
+record offsets, compact UTF-8 JSON records, and a SHA-256 trailer covering all
+preceding index bytes. Every lookup hashes both complete files, checks exact
+lengths and every record span, then validates the selected record and asset path.
+The index must be a bounded regular file, never a symlink. The checksum detects
+corruption; it does not authenticate whoever generated the file.
+
+Startup never rebuilds indexes or writes journals. When v2 is absent, an existing
+`selection.sqlite3` remains usable through the read-only compatibility reader;
+SQLite is imported only for that path. A present but invalid v2 index does **not**
+downgrade to SQLite. Missing, stale, malformed, or unsafe indexes return no
+accelerated selection so the caller can use normal catalog selection.
+
+Index preparation stages updates atomically, rechecks the canonical catalog
+before publication, and refuses unrelated or unrecognized existing destinations.
+Rebuilding v2 leaves any legacy SQLite file untouched. Ownership is recognized
+from a structurally valid checksummed v2 file, even if its catalog digest is stale;
+a damaged destination requires explicit operator handling rather than overwrite.
 
 Loading JSON still validates every entry's schema, unique canonical identity,
 and exact content-addressed relative path. Filesystem resolution is deliberately
