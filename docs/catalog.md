@@ -39,6 +39,26 @@ or changes colors. CLI override handling belongs to the CLI integration layer.
   schema, geometry, animation frame count, IDs, digest shape, and safe paths,
   but does not hash every GIF at terminal startup.
 
+## Fast random startup
+
+Preparation can explicitly build `selection.sqlite3` through
+`retrofetch.selection_index.build_index(data_dir)`. Default unfiltered random
+selection may use `select_random(data_dir)`: it chooses a uniform ordinal,
+validates that record's metadata, and checks the selected asset path. Named
+selection, filters, and discovery continue using the canonical JSON catalog.
+
+The optional SQLite index records the exact catalog SHA-256, format version,
+and entry count. Startup hashes the catalog without parsing every row and opens
+the index read-only and immutable; it never rebuilds an index or creates a
+journal. Missing, stale, malformed, or unsafe indexes return no accelerated
+selection so the caller can use normal catalog selection. Index preparation
+stages updates atomically and refuses unrelated existing files.
+
+Loading JSON still validates every entry's schema, unique canonical identity,
+and exact content-addressed relative path. Filesystem resolution is deliberately
+deferred to the selected asset rather than resolving thousands of unselected
+paths. Exhaustive asset validation remains the job of `--validate`.
+
 ## Catalog format
 
 A version-1 object contains an `animations` array. Each entry has `id`, `name`,
@@ -53,6 +73,7 @@ visible animation; the importer validates actual animation content.
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_catalog.py' -v
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_config.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_selection_index.py' -v
 ```
 
 These checks cover filters, aliases, ambiguity, injectable random selection,
