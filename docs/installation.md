@@ -50,6 +50,17 @@ Existing unrelated prefix files are preserved. The installer refuses an unknown
 package updates are staged; preparation failure publishes no new launcher.
 The installer neither deletes `temp/` nor removes any source collection.
 
+## Optional terminal startup
+
+After installation, explicitly copy/source the appropriate guarded example from
+`examples/startup.bash`, `examples/startup.zsh`, or `examples/startup.fish` in your
+interactive shell configuration. Replace an existing explicit Fastfetch startup
+invocation yourself if necessary to avoid duplicate output. Installation makes
+none of these changes for you.
+
+The examples require interactive Kitty, no tmux/screen, and an available
+`retrofetch` command. Unsupported startup contexts are skipped quietly.
+
 ## Source rights and optional packaging
 
 Source assets have their own notices and restrictions; Internet Archive hosting

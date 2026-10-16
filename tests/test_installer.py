@@ -133,5 +133,29 @@ class InstallerTests(unittest.TestCase):
              patch("retrofetch.installer.supports_animation", return_value=False), self.assertRaises(InstallationError):
             check_dependencies()
 
+    @unittest.skipUnless(shutil.which("bash"), "Bash is unavailable")
+    def test_opt_in_bash_startup_is_guarded(self):
+        binary = self.root / "bin/retrofetch"
+        binary.parent.mkdir()
+        binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$RETROFETCH_TEST_LOG"\n')
+        binary.chmod(0o755)
+        log = self.root / "calls"
+        environment = {
+            "PATH": str(binary.parent) + os.pathsep + os.environ.get("PATH", "/usr/bin"),
+            "HOME": str(self.root), "TERM": "xterm-kitty", "RETROFETCH_TEST_LOG": str(log),
+            "STARTUP_FILE": str(Path("examples/startup.bash").resolve()),
+        }
+        for interactive, overrides, expected in ((False, {}, False), (True, {"TERM": "xterm"}, False),
+                                                  (True, {"TMUX": "active"}, False), (True, {"STY": "active"}, False),
+                                                  (True, {}, True)):
+            log.unlink(missing_ok=True)
+            result = subprocess.run([shutil.which("bash"), "--noprofile", "--norc", "-ic" if interactive else "-c", '. "$STARTUP_FILE"'],
+                                    env={**environment, **overrides}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(log.exists(), expected)
+            if expected:
+                self.assertEqual(log.read_text(), "--startup\n")
+
+
 if __name__ == "__main__":
     unittest.main()
