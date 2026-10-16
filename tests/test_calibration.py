@@ -106,3 +106,143 @@ class CalibrationTests(unittest.TestCase):
             self.assertEqual(report['reference_rows'], 29)
             self.assertEqual(layout_padding(str(self.config), None, self.geometry, 8,
                                             state_file=self.state), 10)
+
+    def test_fixed_height_reuses_rows_columns_font_and_size_without_measurement(self):
+        with patch('retrofetch.calibration._measure', return_value=30) as measure:
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state,
+                             layout_mode='fixed-height')
+        measure.assert_called_once()
+        before = self.state.read_bytes()
+        with patch('retrofetch.calibration._measure', side_effect=AssertionError('startup measurement')):
+            for geometry in ((120, 50, 10, 20), (80, 40, 10, 20), (120, 40, 7, 16)):
+                with self.subTest(geometry=geometry):
+                    self.assertEqual(layout_padding(str(self.config), None, geometry, 10,
+                                                    state_file=self.state), 10)
+            self.assertEqual(layout_padding(str(self.config), (12, 5), self.geometry, 5,
+                                            state_file=self.state), 12)
+        self.assertEqual(self.state.read_bytes(), before)
+
+    def test_width_sensitive_profiles_coexist_and_match_effective_width(self):
+        with patch('retrofetch.calibration._measure', return_value=30):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        second = (100, 40, 10, 20)
+        with patch('retrofetch.calibration._measure', return_value=20):
+            calibrate_layout(str(self.config), geometry=second, state_file=self.state)
+        self.assertEqual(layout_padding(str(self.config), None, self.geometry, 8, state_file=self.state), 11)
+        self.assertEqual(layout_padding(str(self.config), None, second, 8, state_file=self.state), 6)
+        self.assertIsNone(layout_padding(str(self.config), None, (99, 40, 10, 20), 8, state_file=self.state))
+        self.assertEqual(layout_padding(str(self.config), None, (120, 50, 10, 20), 8, state_file=self.state), 11)
+
+    def test_environment_and_binary_identity_invalidate_fixed_height(self):
+        with patch('retrofetch.calibration._measure', return_value=30):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state,
+                             layout_mode='fixed-height')
+        for key, value in (('TERM', 'different'), ('XDG_CONFIG_DIRS', '/different')):
+            with self.subTest(environment=key), patch.dict(os.environ, {key: value}):
+                self.assertIsNone(layout_padding(str(self.config), None, self.geometry, 8, state_file=self.state))
+        changed = dict(os.environ)
+        if 'NO_COLOR' in changed:
+            changed.pop('NO_COLOR')
+        else:
+            changed['NO_COLOR'] = ''
+        with patch.dict(os.environ, changed, clear=True):
+            self.assertIsNone(layout_padding(str(self.config), None, self.geometry, 8, state_file=self.state))
+        binary = self.root / 'other-fastfetch'
+        binary.write_text('different executable')
+        with patch('retrofetch.calibration.shutil.which', return_value=str(binary)):
+            self.assertIsNone(layout_padding(str(self.config), None, self.geometry, 8, state_file=self.state))
+
+    def test_legacy_backup_unknown_state_and_parent_symlinks(self):
+        legacy = dict(owner='retrofetch-layout', version=1, key={}, reference_rows=29, position='left')
+        self.state.write_text(json.dumps(legacy))
+        original = self.state.read_bytes()
+        self.assertIsNone(layout_padding(str(self.config), None, self.geometry, 8, state_file=self.state))
+        with patch('retrofetch.calibration._measure', return_value=30):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        self.assertEqual(self.state.with_name(self.state.name + '.v1.bak').read_bytes(), original)
+        self.assertEqual(json.loads(self.state.read_text())['version'], 2)
+        self.state.write_text('{"owner":"someone-else","version":2,"profiles":[]}')
+        with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        measure.assert_not_called()
+        outside = self.root / 'real'
+        outside.mkdir()
+        link = self.root / 'linked'
+        link.symlink_to(outside, target_is_directory=True)
+        with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=link / 'layout.json')
+        measure.assert_not_called()
+
+    def test_fixed_height_auto_reevaluates_current_position(self):
+        self.config.write_text('{"logo":{"position":"auto"}}')
+        with patch('retrofetch.calibration._measure', return_value=30):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state,
+                             layout_mode='fixed-height')
+        self.assertEqual(layout_padding(str(self.config), None, (90, 40, 7, 16), 10, state_file=self.state), 10)
+        self.assertIsNone(layout_padding(str(self.config), None, (40, 40, 7, 16), 10, state_file=self.state))
+
+    def test_profiles_bound_replacement_and_size_compatibility(self):
+        with patch('retrofetch.calibration._measure', return_value=30):
+            for columns in range(100, 166):
+                calibrate_layout(str(self.config), geometry=(columns, 40, 10, 20), state_file=self.state)
+        document = json.loads(self.state.read_text())
+        self.assertEqual(len(document['profiles']), 64)
+        self.assertIsNone(layout_padding(str(self.config), None, (100, 40, 10, 20), 8, state_file=self.state))
+        # A smaller logo box at wider viewport can leave the same info columns.
+        self.assertEqual(layout_padding(str(self.config), (12, 5), (159, 40, 10, 20), 5,
+                                        state_file=self.state), 12)
+        with patch('retrofetch.calibration._measure', return_value=20):
+            calibrate_layout(str(self.config), geometry=(165, 40, 10, 20), state_file=self.state)
+        self.assertEqual(len(json.loads(self.state.read_text())['profiles']), 64)
+        self.assertEqual(layout_padding(str(self.config), None, (165, 40, 10, 20), 8,
+                                        state_file=self.state), 6)
+
+    def test_invalid_modes_oversized_and_unrelated_backup_preserve_state(self):
+        with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state,
+                             layout_mode='automatic')
+        measure.assert_not_called()
+        self.state.write_bytes(b' ' * (128 * 1024 + 1))
+        before = self.state.read_bytes()
+        with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        measure.assert_not_called()
+        self.assertEqual(self.state.read_bytes(), before)
+        self.state.write_text(json.dumps(dict(owner='retrofetch-layout', version=1,
+                                             key={}, reference_rows=29, position='left')))
+        backup = self.state.with_name(self.state.name + '.v1.bak')
+        backup.write_text('unrelated')
+        before = self.state.read_bytes()
+        with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        measure.assert_not_called()
+        self.assertEqual(backup.read_text(), 'unrelated')
+        self.assertEqual(self.state.read_bytes(), before)
+
+    def test_atomic_failure_keeps_owned_state_and_read_rejects_parent_symlink(self):
+        with patch('retrofetch.calibration._measure', return_value=30):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state,
+                             layout_mode='fixed-height')
+        before = self.state.read_bytes()
+        with patch('retrofetch.calibration._measure', return_value=40), \
+             patch('retrofetch.calibration.os.replace', side_effect=OSError('interrupted')):
+            with self.assertRaises(OSError):
+                calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        self.assertEqual(self.state.read_bytes(), before)
+        link = self.root / 'linked'
+        link.symlink_to(self.root, target_is_directory=True)
+        self.assertIsNone(layout_padding(str(self.config), None, self.geometry, 8,
+                                         state_file=link / self.state.name))
+
+    def test_concurrent_explicit_writer_lock_refuses_without_measurement(self):
+        import fcntl
+        with patch('retrofetch.calibration._measure', return_value=30):
+            calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+        before = self.state.read_bytes()
+        lock_path = self.state.with_name(self.state.name + '.lock')
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
+                calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
+            measure.assert_not_called()
+        self.assertEqual(self.state.read_bytes(), before)
