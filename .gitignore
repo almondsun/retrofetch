@@ -21,3 +21,8 @@ htmlcov/
 # Machine-local agent tooling; generated registries contain absolute paths.
 /.atl/
 /.gga
+
+# Local datasets, private task logs, and expanded-library staging/rollback.
+/tmp/
+/odd/tasks/
+/.retrofetch-library-work/

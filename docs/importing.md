@@ -83,3 +83,33 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_importer.py' -v
 
 The deterministic fixtures require ImageMagick and are created only in temporary
 directories. No collection images are generated or modified by these tests.
+
+## Expanded local collections
+
+Use `tmp/animation-factory-dataset/files/` as the combined source root. Do not
+prepare its parent: archived ISO images and recovery artifacts are not candidates.
+The importer recognizes `essential-collection`, `anime-factory`, and
+`250k-animations`, records their Internet Archive URLs in `manifest.json`, and
+retains each selected family's source collection, family, and variant paths.
+Notices remain separated by collection. Availability does not grant redistribution
+rights; generated assets must not be committed.
+
+Essential IDs and categories retain their historical `d1`–`d4` form. Other IDs
+are collection-qualified. Families in different collections share candidates only
+when an identical, decoded visibly animated GIF links them; matching names alone do
+not merge families, and corrupt/shared still images cannot establish identity.
+Orphan high-resolution and alternate transparent suffixes are grouped alongside
+the existing size/background variants. Identical candidate bytes reuse inspection,
+decode, conversion, and rejection results within a preparation run.
+
+For an expanded rebuild, call `prepare_library(source, fresh_stage,
+legacy_catalog=current_library / 'catalog.json')`, then `normalize_library`,
+`build_index`, and `validate_library`. The optional baseline preserves canonical
+IDs, categories, aliases, and previously unambiguous selectors; missing legacy
+IDs or irreconcilable canonical-ID selector collisions abort publication. Existing single-collection and CLI usage remain supported.
+Checkpoints include the grouping-policy identity so older grouping results are
+not silently reused. Debug limits still do not publish a catalog or manifest.
+
+Use a fresh staging library, not the current normalized destination: normalization
+preserves its first original catalog. Fully verify the stage before activating it;
+keep the previous development and installed libraries as rollback snapshots.

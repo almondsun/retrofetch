@@ -48,6 +48,18 @@ class CollectionTests(unittest.TestCase):
             result, _ = organize_collections(root, groups)
             self.assertEqual(len(result), 2)
 
+    def test_shared_multiframe_still_cannot_establish_family_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            groups = {}
+            for name in ('essential-collection/d1/cat', 'anime-factory/disc-01/dog'):
+                path = root / (name + '.gif')
+                path.parent.mkdir(parents=True)
+                fixture(path, static=True)
+                groups[name] = [path]
+            result, _ = organize_collections(root, groups)
+            self.assertEqual(len(result), 2)
+
     def test_single_collection_preserves_original_ids_and_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
