@@ -14,13 +14,23 @@ package manager. Then, from this checkout:
 sh install.sh
 ```
 
-This downloads the collection ZIP from Internet Archive, verifies its advertised
-size and SHA-1 when available, safely extracts source images/pages/notices into
-the user cache, and prepares assets before publishing the launcher. SHA-1 here
-detects transfer corruption; it is not an authenticity or licensing guarantee.
-Expect a roughly 1.6 GB download and several GB of temporary/extracted data.
-Installation can take substantial time; terminal startup never downloads or
-converts assets.
+The installer displays the download and third-party-rights notice before network
+access. Type `yes` to accept, or use `sh install.sh --accept-source-notices` for
+an explicitly accepted noninteractive installation. Without acceptance,
+noninteractive installation fails before downloading.
+
+The default downloads **all three collections**: Essential Collection (ZIP),
+250K Animations (ISO), and the twelve Anime Factory disc images. Expect roughly
+**13.71 GB of downloads**, at least **65 GiB free** when cache and destination
+share a filesystem, and hours of upfront preparation. On separate filesystems,
+the cache needs 45 GiB and the library destination 20 GiB. These conservative
+budgets reserve room for extraction, staging, and retained rollback data;
+existing rollback directories consume additional disk space.
+Archives are verified against source metadata. Transfer hashes detect corruption,
+not authenticity or permission to use the artwork. Completed downloads can be
+reused on retry; source notices and explicit known-damage exclusions are retained.
+Terminal startup never downloads or converts assets.
+
 Preparation also normalizes artwork onto a common 160×160 transparent canvas
 and builds a selection index. Existing libraries can run `retrofetch --normalize`
 instead of downloading/importing again; originals and the first catalog remain
@@ -32,7 +42,7 @@ Ensure `~/.local/bin` is already on your `PATH`, or invoke
 ## Reuse local source and choose directories
 
 ```sh
-sh install.sh --source 'temp/animation factory essential collection'
+sh install.sh --source 'tmp/animation-factory-dataset/files'
 sh install.sh --prefix "$HOME/.local" --data-dir "$HOME/.local/share/retrofetch"
 ```
 
@@ -51,7 +61,17 @@ installation finishes.
 
 Existing unrelated prefix files are preserved. The installer refuses an unknown
 `bin/retrofetch` or unmarked package directory rather than replacing it. Managed
-package updates are staged; preparation failure publishes no new launcher.
+upgrades prepare and validate a fresh library before publishing any active
+output. Previous IDs/selectors are preserved, as are prior normalized GIFs for
+in-flight readers. Library and package directories use Linux atomic exchange;
+launcher and capability metadata publication participate in reverse-order
+rollback if a later publication fails. Old libraries, packages, launcher, and
+capability metadata remain in `.retrofetch-rollback-*` directories beside their
+targets after success; the installer reports those paths and never removes
+those rollback copies automatically. Concurrent installations targeting the
+same prefix or library are rejected. Symlinked target ancestors and unmanaged
+libraries are rejected. A local `--source` avoids downloading, the acceptance
+prompt, and the download-space check.
 The installer neither deletes `temp/` nor removes any source collection.
 
 ## Optional terminal startup

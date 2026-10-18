@@ -1,0 +1,13 @@
+include README.md LICENSE install.sh
+recursive-include examples *.bash *.zsh *.fish
+recursive-include docs *.md
+recursive-include scripts *.py
+prune data
+prune tmp
+prune temp
+prune odd
+prune .retrofetch-library-work
+prune .vscode
+prune recovery
+prune source-archives
+global-exclude *.gif *.iso *.idx *.sqlite3 *.pyc
