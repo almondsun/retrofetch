@@ -56,6 +56,31 @@ class MultiSourceTests(unittest.TestCase):
             with patch('retrofetch.importer.decode_gif', side_effect=AssertionError('checkpoint reuse')):
                 self.assertEqual(prepare_library(source, dest, legacy_catalog=old / 'catalog.json')['successes'], 1)
 
+    def test_new_essential_identity_and_manifest_are_namespaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            cat = source / 'd1/animals/cat_lc.gif'
+            cat.parent.mkdir(parents=True)
+            fixture(cat)
+            dest = root / 'out'
+            prepare_library(source, dest)
+            baseline = root / 'legacy.json'
+            baseline.write_bytes((dest / 'catalog.json').read_bytes())
+            bear = source / 'd2/animals/bear_lc.gif'
+            bear.parent.mkdir(parents=True)
+            bear.write_bytes(cat.read_bytes())
+            report = prepare_library(source, dest, legacy_catalog=baseline)
+            catalog = Catalog.load(dest)
+            self.assertEqual(catalog.select('d1/animals/cat').id, 'd1/animals/cat')
+            self.assertEqual(catalog.select('bear').id, 'essential-collection/d2/animals/bear')
+            self.assertEqual({row['id'] for row in report['selections']},
+                             {row.id for row in catalog.entries})
+            # A subsequent rebuild against this library must preserve both IDs.
+            prepare_library(source, dest, legacy_catalog=dest / 'catalog.json')
+            self.assertEqual(Catalog.load(dest).select('bear').id,
+                             'essential-collection/d2/animals/bear')
+
     def test_orphan_high_and_transparent_suffixes_form_one_family(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

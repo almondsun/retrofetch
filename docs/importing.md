@@ -94,8 +94,9 @@ retains each selected family's source collection, family, and variant paths.
 Notices remain separated by collection. Availability does not grant redistribution
 rights; generated assets must not be committed.
 
-Essential IDs and categories retain their historical `d1`–`d4` form. Other IDs
-are collection-qualified. Families in different collections share candidates only
+Existing Essential IDs and categories retain their historical `d1`–`d4` form.
+When rebuilding against a legacy baseline, newly usable Essential families use
+`essential-collection/` IDs too. Other collections always use qualified IDs. Families in different collections share candidates only
 when an identical, decoded visibly animated GIF links them; matching names alone do
 not merge families, and corrupt/shared still images cannot establish identity.
 Orphan high-resolution and alternate transparent suffixes are grouped alongside

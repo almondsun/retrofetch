@@ -408,7 +408,9 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
             os.replace(failure, _safe(destination, 'import-failure.json'))
             raise ValueError('No usable animations; see import-failure.json for exclusions')
         if legacy is not None and limit is None:
-            preserve_selectors(entries, legacy)
+            renames = preserve_selectors(entries, legacy)
+            for selection in report['selections']:
+                selection['id'] = renames.get(selection['id'], selection['id'])
         if limit is None:
             _publish(destination, staging, {'version': 1, 'animations': entries}, report)
     return report
