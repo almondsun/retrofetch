@@ -14,15 +14,21 @@ your distribution's package manager first.
 ```sh
 git clone https://github.com/almondsun/retrofetch.git
 cd retrofetch
-sh install.sh
+sh install.sh --accept-source-notices
 ```
 
-The installer downloads approximately 1.7 GB from Internet Archive and prepares
-the library upfront. Expect several GB of free space and substantial preparation
-time; the development import took about 31 minutes, followed by about 68 minutes
-of normalization. Nothing downloads or converts
-during terminal startup. Code installs into `~/.local`, assets into XDG data home.
-Ensure `~/.local/bin` is on your `PATH`.
+The installer downloads all three source collections (Essential, 250K_ANIMATIONS,
+and Anime Factory): approximately **13.71 GB**, followed by upfront extraction,
+validation, and normalization. Allow at least **65 GiB of free working space**
+for the default cache/data layout and several hours of preparation. Existing
+installations need additional room for their retained rollback library. Read the
+third-party source notices before using `--accept-source-notices`; this option
+acknowledges the notices, not a grant of asset rights. Nothing downloads or
+converts during terminal startup. Code installs into `~/.local`, assets into XDG
+data home. Ensure `~/.local/bin` is on your `PATH`.
+
+For a versioned code-only source archive without Git, see
+[installation](docs/installation.md) and the [v0.2.0 release notes](docs/releases/0.2.0.md).
 
 Already have the extracted collection? Use `sh install.sh --source /path/to/source`.
 See [installation and recovery](docs/installation.md) for directory overrides,
@@ -63,8 +69,8 @@ runtime normalization or calibration. See [measured performance](docs/library-re
 
 ## Library and source rights
 
-The verified development library contains **20,554 eligible animation entries**
-sharing **20,283 normalized GIFs**, with all **20,284 originals** retained. Larger opaque variants are tried conservatively;
+The verified development library contains **36,642 eligible animation entries**
+sharing **34,604 normalized GIFs**, with all **36,332 unique native originals** retained. Larger opaque variants are tried conservatively;
 unsuitable conversions fall back to usable transparent variants. Corrupt,
 ambiguous, and visually static results are excluded. See
 [preparation rules](docs/importing.md) and [the verification report](docs/library-report.md).

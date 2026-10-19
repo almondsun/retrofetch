@@ -6,7 +6,10 @@ import tarfile
 import zipfile
 
 FORBIDDEN_SUFFIXES = {'.gif', '.iso', '.sqlite3', '.idx', '.zip', '.pyc'}
-FORBIDDEN_PARTS = {'__pycache__', '.source-verification', '.git', '.aws', '.codex', '.agents'}
+FORBIDDEN_PARTS = {
+    '__pycache__', '.source-verification', '.git', '.aws', '.codex', '.agents',
+    'tmp', '.retrofetch-library-work', 'odd', '.vscode', 'recovery', 'source-archives',
+}
 
 
 def check(path):
