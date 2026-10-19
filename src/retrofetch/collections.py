@@ -109,6 +109,20 @@ def organize_collections(root, groups, *, hashes=None, validations=None):
 
 def preserve_selectors(entries, legacy):
     """Pin prior unambiguous lookups without changing catalog lookup precedence."""
+    legacy_ids = {entry['id'].casefold() for entry in legacy}
+    renames = {}
+    for entry in entries:
+        identity = entry['id']
+        if ('/' in identity and identity.split('/', 1)[0].casefold() in ('d1', 'd2', 'd3', 'd4')
+                and identity.casefold() not in legacy_ids):
+            renames[identity] = 'essential-collection/' + identity
+            entry['id'] = renames[identity]
+    for entry in entries:
+        entry['aliases'] = [renames.get(alias, alias) for alias in entry['aliases']
+                            if renames.get(alias, alias).casefold() != entry['id'].casefold()]
+    renamed_entries = {entry['id']: entry for entry in entries}
+    for old, new in renames.items():
+        renamed_entries[new]['aliases'].append(old)
     current = {entry['id'].casefold(): entry for entry in entries}
     ids, aliases, names = {}, defaultdict(list), defaultdict(list)
     for entry in legacy:
@@ -138,3 +152,4 @@ def preserve_selectors(entries, legacy):
             current[identity]['aliases'].append(token)
     for entry in entries:
         entry['aliases'].sort()
+    return renames

@@ -72,6 +72,24 @@ class CollectionTests(unittest.TestCase):
             records = provenance(root)
             self.assertEqual(records[0]['url'], 'https://archive.org/details/animationfactoryessentialcollection')
 
+    def test_only_new_essential_ids_receive_collection_namespace(self):
+        legacy = [{'id': 'd1/cat', 'name': 'cat', 'aliases': [], 'categories': ['animals']}]
+        entries = [dict(legacy[0], aliases=['d2/bear']),
+                   {'id': 'd2/bear', 'name': 'bear', 'aliases': ['essential-collection/d2/bear'],
+                    'categories': ['animals']}]
+        renames = preserve_selectors(entries, legacy)
+        self.assertEqual(entries[0]['id'], 'd1/cat')
+        self.assertEqual(entries[1]['id'], 'essential-collection/d2/bear')
+        self.assertEqual(renames, {'d2/bear': 'essential-collection/d2/bear'})
+        self.assertIn('essential-collection/d2/bear', entries[0]['aliases'])
+        self.assertIn('d2/bear', entries[1]['aliases'])
+        self.assertNotIn(entries[1]['id'], entries[1]['aliases'])
+        # The next rebuild must retain the newly namespaced canonical ID too.
+        next_entries = [dict(legacy[0], aliases=[]),
+                        {'id': 'd2/bear', 'name': 'bear', 'aliases': [], 'categories': ['animals']}]
+        preserve_selectors(next_entries, entries)
+        self.assertEqual(next_entries[1]['id'], entries[1]['id'])
+
     def test_selector_pinning_prevents_new_name_ambiguity(self):
         old = [{'id': 'd1/cat', 'name': 'cat', 'aliases': ['old-cat'], 'categories': ['animals']}]
         current = [dict(old[0], aliases=[]),
