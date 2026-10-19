@@ -26,11 +26,11 @@ class QualityCliTests(unittest.TestCase):
             return main(['--data-dir', str(self.root), *args])
 
     def test_default_random_uses_index_without_full_catalog(self):
-        with patch('retrofetch.selection_index.select_random', return_value=SimpleNamespace(path=self.gif)) as select, \
+        with patch('retrofetch.selection_index.select_indexed', create=True, return_value=SimpleNamespace(path=self.gif)) as select, \
                 patch('retrofetch.cli.Catalog.load', side_effect=AssertionError('full catalog hot path')), \
                 patch('retrofetch.cli.render') as render:
             self.assertEqual(self.invoke('--startup'), 0)
-        select.assert_called_once_with(self.root)
+        select.assert_called_once_with(self.root, None, (), ())
         self.assertEqual(render.call_args.args[0], self.gif)
 
     def test_normalize_is_upfront_and_builds_index_without_terminal(self):
@@ -48,12 +48,35 @@ class QualityCliTests(unittest.TestCase):
             self.assertEqual(self.invoke('--calibrate-layout', '--fastfetch-config', 'none', '--size', '12x6'), 0)
         calibrate.assert_called_once_with('none', (12, 6))
 
-    def test_filters_keep_existing_catalog_selection_path(self):
-        with patch('retrofetch.selection_index.select_random', side_effect=AssertionError('index ignores filters')), \
+    def test_named_and_filtered_playback_uses_index(self):
+        with patch('retrofetch.selection_index.select_indexed', create=True,
+                   return_value=SimpleNamespace(path=self.gif)) as select, \
+                patch('retrofetch.cli.Catalog.load', side_effect=AssertionError('full catalog hot path')), \
+                patch('retrofetch.cli.render'):
+            self.assertEqual(self.invoke('chosen', '--include', 'animals', '--exclude', 'birds'), 0)
+        select.assert_called_once_with(self.root, 'chosen', ['animals'], ['birds'])
+
+    def test_discovery_keeps_canonical_catalog(self):
+        with patch('retrofetch.selection_index.select_indexed', create=True,
+                   side_effect=AssertionError('indexed discovery')), \
+                patch('retrofetch.cli.Catalog.load') as catalog:
+            catalog.return_value.filtered.return_value = []
+            self.assertEqual(self.invoke('--list', '--include', 'animals'), 0)
+        catalog.assert_called_once_with(self.root)
+        catalog.return_value.filtered.assert_called_once_with(['animals'], ())
+
+    def test_index_infrastructure_failure_uses_canonical_selection(self):
+        with patch('retrofetch.selection_index.select_indexed', create=True, return_value=None), \
                 patch('retrofetch.cli.Catalog.load') as catalog, patch('retrofetch.cli.render'):
             catalog.return_value.select.return_value.path = self.gif
             self.assertEqual(self.invoke('--include', 'animals'), 0)
         catalog.return_value.select.assert_called_once_with(None, ['animals'], ())
+
+    def test_index_semantic_error_does_not_fall_back(self):
+        with patch('retrofetch.selection_index.select_indexed', create=True, side_effect=ValueError('Unknown animation: missing')), \
+                patch('retrofetch.cli.Catalog.load', side_effect=AssertionError('semantic fallback')):
+            self.assertEqual(self.invoke('missing'), 1)
+        self.assertIn('Unknown animation: missing', self.errors.getvalue())
 
     def test_refresh_runtime_is_explicit_and_does_not_normalize(self):
         self.output.isatty = lambda: False

@@ -1,15 +1,42 @@
 """Catalog discovery, offline preparation, and native terminal rendering."""
 
 import argparse
-import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
-from .rendering import image_size, plain_fastfetch, render
-from .catalog import Catalog
-from .config import data_directory, load_settings
+class Catalog:
+    """Defer catalog imports while preserving the CLI's patchable loading seam."""
+
+    @staticmethod
+    def load(*args, **kwargs):
+        from .catalog import Catalog as implementation
+        return implementation.load(*args, **kwargs)
+
+
+def image_size(*args, **kwargs):
+    from .rendering import image_size as implementation
+    return implementation(*args, **kwargs)
+
+
+def render(*args, **kwargs):
+    from .rendering import render as implementation
+    return implementation(*args, **kwargs)
+
+
+def plain_fastfetch(*args, **kwargs):
+    from .rendering import plain_fastfetch as implementation
+    return implementation(*args, **kwargs)
+
+
+def data_directory(*args, **kwargs):
+    from .config import data_directory as implementation
+    return implementation(*args, **kwargs)
+
+
+def load_settings(*args, **kwargs):
+    from .config import load_settings as implementation
+    return implementation(*args, **kwargs)
 
 
 def size_box(value):
@@ -65,6 +92,7 @@ def main(argv=None):
         parser.error("calibration cannot be combined with animation selection or startup")
     directory = args.data_dir.expanduser() if args.data_dir is not None else data_directory()
     if maintenance:
+        import json
         try:
             if args.refresh_runtime:
                 from .runtime_cache import refresh_runtime
@@ -97,6 +125,8 @@ def main(argv=None):
             return 1
     kitty = os.environ.get("TERM") == "xterm-kitty" and not (os.environ.get("TMUX") or os.environ.get("STY"))
     if args.calibrate_layout:
+        import json
+        import subprocess
         from .calibration import calibrate_layout
         if not sys.stdout.isatty() or not kitty or not sys.platform.startswith('linux'):
             print('retrofetch: calibration requires an interactive Linux Kitty terminal', file=sys.stderr)
@@ -121,10 +151,12 @@ def main(argv=None):
         include = settings.include if args.include is None else args.include
         exclude = settings.exclude if args.exclude is None else args.exclude
         if discovery or args.file is None:
-            from .selection_index import select_random
-            selected = (select_random(directory) if not discovery and args.animation is None
-                        and not include and not exclude else None)
-            catalog = Catalog.load(directory) if selected is None else None
+            selected = None
+            if not discovery:
+                from .selection_index import select_indexed
+                selected = select_indexed(directory, args.animation, include, exclude)
+            catalog = (Catalog.load(directory)
+                       if selected is None else None)
             if discovery:
                 entries = (catalog.search(args.search, include, exclude) if args.search is not None
                            else catalog.filtered(include, exclude))
