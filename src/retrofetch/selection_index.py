@@ -155,6 +155,11 @@ def select_indexed(data_dir: Path, identifier=None, include=(), exclude=(), rng=
     """
     unfiltered = identifier is None and not include and not exclude
     generator = rng if rng is not None else random
+    if not unfiltered:
+        from .selection_v3 import select_v3
+        selected = select_v3(data_dir, identifier, include, exclude, rng)
+        if selected is not None:
+            return selected
     try:
         root = Path(data_dir).resolve(strict=True)
         path = root / INDEX_NAME
