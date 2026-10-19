@@ -265,3 +265,168 @@ def acquire_source(cache_dir: Path, *, progress=None) -> Path:
             partial.unlink(missing_ok=True)
             if staging is not None:
                 shutil.rmtree(staging)
+
+
+# The historical single-ZIP entrypoint remains available for existing callers.
+from .sources import SOURCES, KNOWN_DAMAGED_SHA256
+from .iso9660 import extract_iso, IsoError, safe_parents
+
+
+def _verified_collection(source):
+    if not _verified_source(source):
+        return False
+    record = json.loads((source/MARKER).read_text())
+    actual = set()
+    for path in source.rglob('*'):
+        if path.is_symlink():
+            return False
+        if path.is_file() and path != source/MARKER:
+            actual.add(path.relative_to(source).as_posix())
+    return actual == set(record['files'])
+
+
+def _collection_source(cache, specification, progress):
+    """Keep each verified download/extraction reusable after another disc fails."""
+    safe_parents(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    source = cache / 'source'
+    if _verified_collection(source):
+        record = json.loads((source / MARKER).read_text())
+        if record.get('pinned_sha1') == specification.sha1:
+            return source, record
+    if source.exists() and not _regular(source / MARKER):
+        raise AcquisitionError('refusing to replace an unrecognized collection cache')
+    archive = cache / ('collection.zip' if specification.name.endswith('.zip') else 'collection.iso')
+    partial = cache / 'download.part'
+    for path in (source, archive, partial):
+        safe_parents(path)
+    valid = (_regular(archive) and archive.stat().st_size == specification.size
+             and _hash(archive,'sha1') == specification.sha1)
+    if not valid:
+        if progress:
+            progress(f'Downloading {specification.name} ({specification.size} bytes)')
+        try:
+            digest, received = hashlib.sha1(), 0
+            with _open(specification.url) as response, partial.open('wb') as output:
+                for block in iter(lambda: response.read(1024*1024),b''):
+                    received += len(block)
+                    if received > specification.size:
+                        raise AcquisitionError('download exceeds pinned archive size')
+                    digest.update(block)
+                    output.write(block)
+            if received != specification.size or digest.hexdigest() != specification.sha1:
+                raise AcquisitionError('download differs from pinned archive size or SHA-1')
+            os.replace(partial,archive)
+        finally:
+            partial.unlink(missing_ok=True)
+    sha256 = _hash(archive)
+    staging = Path(tempfile.mkdtemp(prefix='.extract-',dir=cache))
+    try:
+        extracted = staging / 'source'
+        if progress:
+            progress(f'Validating and extracting {specification.name}')
+        if specification.name.endswith('.zip'):
+            files = extract_zip(archive,extracted)
+            roots = {extracted, *(path.parent for path in extracted.rglob('d1') if path.is_dir())}
+            roots = [root for root in roots if all((root/f'd{i}').is_dir() for i in range(1,5))]
+            if len(roots) != 1:
+                raise AcquisitionError('source ZIP must contain exactly one complete four-disc root')
+            root = roots[0]
+            if root != extracted:
+                root.rename(staging/'flattened')
+                shutil.rmtree(extracted)
+                (staging/'flattened').rename(extracted)
+                # Materialized source paths, not archive paths, bind the marker.
+                files = {path.relative_to(extracted).as_posix():_hash(path)
+                         for path in extracted.rglob('*') if path.is_file()}
+            omitted = []
+        else:
+            damaged = sha256 == KNOWN_DAMAGED_SHA256 and specification.key == 'anime-03'
+            report = extract_iso(archive,extracted,known_truncation=damaged)
+            files, omitted = report['files'], report['omitted']
+            if damaged and len(omitted) != 13:
+                raise AcquisitionError('known damaged ISO omission inventory changed')
+        if not files:
+            raise AcquisitionError('collection has no supported source files')
+        record = {'version':1,'url':specification.url,'pinned_sha1':specification.sha1,
+                  'archive_size':specification.size,'archive_sha256':sha256,
+                  'files':files,'omitted':omitted}
+        (extracted/MARKER).write_text(json.dumps(record,sort_keys=True)+'\n')
+        if source.exists():
+            source.rename(staging/'previous')
+        try:
+            extracted.rename(source)
+        except OSError:
+            if (staging/'previous').exists():
+                (staging/'previous').rename(source)
+            raise
+        return source, record
+    finally:
+        shutil.rmtree(staging)
+
+
+def acquire_collections(cache_dir: Path, *, progress=None) -> Path:
+    """Acquire all pinned collections; report known absent payloads explicitly.
+
+    The returned combined tree uses the importer's collection-qualified roots.
+    Complete per-archive caches survive later failures. No archive programs are
+    materialized, mounted, or executed. SHA-1 checks official archive identity;
+    SHA-256 binds local archive and extracted-member cache integrity.
+    """
+    cache_dir = Path(cache_dir).expanduser().absolute()
+    staging = None
+    try:
+        safe_parents(cache_dir)
+        cache_dir.mkdir(parents=True,exist_ok=True)
+        lock_path = cache_dir/'.collections.lock'
+        safe_parents(lock_path)
+        with lock_path.open('a') as lock:
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise AcquisitionError('another collection acquisition is running') from error
+            source = cache_dir/'source'
+            safe_parents(source)
+            identities = {item.key:item.sha1 for item in SOURCES}
+            if _verified_collection(source):
+                marker = json.loads((source/MARKER).read_text())
+                if marker.get('identities') == identities:
+                    if progress:
+                        progress('Reusing all three verified source collections')
+                    return source
+            if source.exists() and not _regular(source/MARKER):
+                raise AcquisitionError('refusing to replace an unrecognized combined source')
+            staging = Path(tempfile.mkdtemp(prefix='.collections-stage-',dir=cache_dir))
+            combined = staging/'source'
+            combined.mkdir()
+            records, hashes = [], {}
+            for specification in SOURCES:
+                extracted, record = _collection_source(cache_dir/'collections'/specification.key,
+                                                       specification,progress)
+                destination = combined/specification.destination
+                destination.mkdir(parents=True)
+                for name,digest in record['files'].items():
+                    relative = _member_path(name)
+                    target = destination.joinpath(*relative.parts)
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    os.link(extracted.joinpath(*relative.parts),target)
+                    hashes[target.relative_to(combined).as_posix()] = digest
+                records.append({key:value for key,value in record.items() if key != 'files'})
+                if record['omitted'] and progress:
+                    progress(f"Known source damage: {specification.name}: {len(record['omitted'])} incomplete payloads excluded")
+            marker = {'version':1,'identities':identities,'files':hashes,'archives':records}
+            (combined/MARKER).write_text(json.dumps(marker,sort_keys=True)+'\n')
+            if source.exists():
+                source.rename(staging/'previous')
+            try:
+                combined.rename(source)
+            except OSError:
+                if (staging/'previous').exists():
+                    (staging/'previous').rename(source)
+                raise
+            return source
+    except (OSError, ValueError, TypeError, KeyError, HTTPException, IsoError) as error:
+        raise AcquisitionError(f'collection acquisition failed: {error}') from error
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging)

@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Require matching version and main ancestry
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          python - <<'PY'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          if os.environ['RELEASE_TAG'] != 'v' + version:
+              raise SystemExit('Release tag must match the package version')
+          if not pathlib.Path('docs/releases/' + version + '.md').is_file():
+              raise SystemExit('Release notes are missing')
+          PY
+      - name: Build, inspect, and smoke-test distributions
+        run: |
+          python -m pip install build
+          python -m build
+          python scripts/check_distribution.py dist/*
+          python -m venv "$RUNNER_TEMP/release-smoke"
+          "$RUNNER_TEMP/release-smoke/bin/python" -m pip install --no-deps dist/*.whl
+          (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/release-smoke/bin/retrofetch" --help)
+          tar -xzf dist/retrofetch-*.tar.gz -C "$RUNNER_TEMP"
+          python "$RUNNER_TEMP"/retrofetch-*/scripts/check_distribution.py dist/*
+          (cd dist && sha256sum *.whl *.tar.gz > SHA256SUMS)
+      - name: Publish verified code-only assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          gh release create "$RELEASE_TAG" --verify-tag --title "Retrofetch $RELEASE_TAG" \
+            --notes-file "docs/releases/$version.md" dist/*.whl dist/*.tar.gz dist/SHA256SUMS

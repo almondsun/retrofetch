@@ -11,7 +11,9 @@ import tempfile
 from urllib.parse import unquote, urlsplit
 from .gif import GifError, inspect_gif, decode_gif, remove_uniform_matte
 from .catalog import Catalog
-SUFFIX = re.compile('_(?:[lmst][bcw]|blk|clr|wht|b|c|w)$', re.I)
+from .collections import organize_collections, preserve_selectors, provenance
+SUFFIX = re.compile('_(?:[hlmst][abcwmx]|blk|clr|wht|b|c|w)$', re.I)
+POLICY = 'multi-collection-v1'
 NOTICE = re.compile('^(?:readme|use|licen[cs]e|copyright|legal)(?:[_. -].*)?$', re.I)
 
 
@@ -149,7 +151,8 @@ def _publish(destination, staging, catalog, report):
 def _valid_checkpoint(cache, source):
     if not isinstance(cache, dict):
         return False
-    if (cache.get('version') != 2 or cache.get('source') != str(source)
+    if (cache.get('version') != 2 or cache.get('policy') != POLICY
+            or cache.get('source') != str(source)
             or not isinstance(cache.get('families'), dict)):
         return False
     for family, previous in cache['families'].items():
@@ -187,7 +190,8 @@ def _valid_checkpoint(cache, source):
     return True
 
 
-def prepare_library(source: Path, destination: Path, *, progress=None, limit=None) -> dict:
+def prepare_library(source: Path, destination: Path, *, progress=None, limit=None,
+                    legacy_catalog=None) -> dict:
     source = Path(source).resolve()
     destination = Path(destination).absolute()
     if limit is not None and (type(limit) is not int or limit <= 0):
@@ -203,20 +207,30 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
         raise ValueError('destination may not be a symlink')
     destination.mkdir(parents=True, exist_ok=True)
     groups, notices = _families(source)
+    source_hashes, validations = {}, {}
+    groups, origins = organize_collections(source, groups, hashes=source_hashes,
+                                           validations=validations)
+    legacy = None
+    if legacy_catalog is not None:
+        from .catalog import _entries_from_document
+        document = json.loads(Path(legacy_catalog).read_text())
+        _entries_from_document(document, destination)
+        legacy = document['animations']
     cache_path = _safe(destination, '.import-checkpoint.json')
     try:
         cache = json.loads(cache_path.read_text())
     except (OSError, ValueError):
         cache = {}
     if not _valid_checkpoint(cache, source):
-        cache = {'version': 2, 'source': str(source), 'families': {}}
+        cache = {'version': 2, 'policy': POLICY, 'source': str(source), 'families': {}}
     report = {
         'version': 1,
         'source': str(source),
         'provenance': (
-            'Animation Factory Essential Collection; source notices retained; '
+            'Animation Factory collections; source notices retained; '
             'no redistribution license inferred'
         ),
+        'collections': provenance(source),
         'partial': limit is not None,
         'families': len(groups),
         'successes': 0,
@@ -226,6 +240,15 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
         'selections': [],
     }
     entries = []
+    inspected, inspection_errors, accepted, rejected = {}, {}, {}, {}
+
+    def source_digest(path):
+        if path.is_symlink() or not path.is_file():
+            raise GifError('unsafe GIF file')
+        if path not in source_hashes:
+            source_hashes[path] = _hash(path)
+        return source_hashes[path]
+
     with tempfile.TemporaryDirectory(prefix='.import-', dir=destination) as directory:
         staging = Path(directory)
         (staging / 'animations').mkdir()
@@ -259,8 +282,17 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
                 ranked = []
                 for p in variants:
                     try:
-                        info = inspect_gif(p)
-                        ranked.append((info.width * info.height, p, info))
+                        raw_hash = source_digest(p)
+                        if raw_hash in inspection_errors:
+                            raise GifError(inspection_errors[raw_hash])
+                        if raw_hash not in inspected:
+                            try:
+                                inspected[raw_hash] = inspect_gif(p)
+                            except (GifError, OSError) as exc:
+                                inspection_errors[raw_hash] = str(exc)
+                                raise
+                        info = inspected[raw_hash]
+                        ranked.append((info.width * info.height, p, info, raw_hash))
                     except (GifError, OSError) as exc:
                         details.append({
                             'path': p.relative_to(source).as_posix(),
@@ -269,29 +301,47 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
                 # Prefer an original declaring transparency at equal native
                 # resolution; decoding still validates that claim. This avoids
                 # converting the black variant merely because '_lb' sorts first.
-                for _, p, info in sorted(
+                for _, p, info, raw_hash in sorted(
                     ranked, key=lambda x: (-x[0], not x[2].first_transparent, str(x[1]))
                 ):
+                    matte_attempted = False
                     try:
-                        decoded = decode_gif(p, info)
-                        if not decoded.animated:
-                            raise GifError('visually static')
-                        candidate = p
-                        if not decoded.transparent:
-                            attempted = True
-                            candidate = staging / 'converted.gif'
-                            decoded = remove_uniform_matte(decoded, candidate)
-                            converted = True
-                        digest = _hash(candidate)
+                        if raw_hash in rejected:
+                            reason, matte_attempted = rejected[raw_hash]
+                            raise GifError(reason)
+                        if raw_hash in accepted:
+                            digest, selected_info, converted = accepted[raw_hash]
+                            candidate = _safe(destination, f'animations/{digest}.gif')
+                        else:
+                            validated = validations.get(raw_hash)
+                            if validated and validated[1] and validated[2]:
+                                from .gif import Decoded
+                                decoded = Decoded(validated[0], [], True, True)
+                            else:
+                                decoded = decode_gif(p, info)
+                            if not decoded.animated:
+                                raise GifError('visually static')
+                            candidate = p
+                            if not decoded.transparent:
+                                attempted = matte_attempted = True
+                                candidate = staging / 'converted.gif'
+                                decoded = remove_uniform_matte(decoded, candidate)
+                                converted = True
+                            digest, selected_info = _hash(candidate), decoded.info
+                            accepted[raw_hash] = (digest, selected_info, converted)
+                        attempted |= converted
                         shutil.copyfile(candidate, staging / 'animations' / f'{digest}.gif')
-                        selected = _entry(family, digest, decoded.info)
+                        selected = _entry(family, digest, selected_info)
                         details.append({
                             'path': p.relative_to(source).as_posix(),
                             'selected': True,
                             'converted': converted,
+                            'source_sha256': raw_hash,
                         })
                         break
                     except (GifError, OSError) as exc:
+                        attempted |= matte_attempted
+                        rejected[raw_hash] = (str(exc), matte_attempted)
                         details.append({
                             'path': p.relative_to(source).as_posix(),
                             'reason': str(exc),
@@ -312,6 +362,7 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
                     'id': family,
                     'sha256': selected['sha256'],
                     'variants': details,
+                    'sources': origins.get(family, []),
                 })
             else:
                 report['exclusions'].append({'id': family, 'variants': details})
@@ -337,6 +388,15 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
             by_hash.setdefault(entry['sha256'], []).append(entry['id'])
         for entry in entries:
             entry['aliases'] = [name for name in by_hash[entry['sha256']] if name != entry['id']]
+        # Assign each reconciled source identity one unambiguous owner.
+        source_owners = {}
+        for family in sorted(origins):
+            for reference in origins[family]:
+                source_owners.setdefault(reference['family'], family)
+        by_id = {entry['id']: entry for entry in entries}
+        for alias, owner in source_owners.items():
+            if owner in by_id and alias not in by_id and alias != owner:
+                by_id[owner]['aliases'].append(alias)
         for notice in notices:
             relative = notice.relative_to(source).as_posix()
             target = staging / 'notices' / relative
@@ -347,6 +407,10 @@ def prepare_library(source: Path, destination: Path, *, progress=None, limit=Non
             _write_json(failure, report)
             os.replace(failure, _safe(destination, 'import-failure.json'))
             raise ValueError('No usable animations; see import-failure.json for exclusions')
+        if legacy is not None and limit is None:
+            renames = preserve_selectors(entries, legacy)
+            for selection in report['selections']:
+                selection['id'] = renames.get(selection['id'], selection['id'])
         if limit is None:
             _publish(destination, staging, {'version': 1, 'animations': entries}, report)
     return report

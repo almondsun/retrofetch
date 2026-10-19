@@ -85,6 +85,12 @@ The approximately 1.6 GB ZIP contains all four discs' extracted contents and
 avoids ISO mounting/extraction. Existing local source material can be reused for
 development without another download.
 
+Local library expansion also uses the [250K_ANIMATIONS collection](https://archive.org/details/3DAnimatedClipart2AnimationFactory2008)
+and the [Anime Factory collection](https://archive.org/details/anime-factory-1).
+Their consolidated extracted files remain read-only inputs. Expanded imports
+preserve all three source identities and notices; this does not change automatic
+installation acquisition or authorize asset redistribution.
+
 The source collection contains its own `readme.txt` and `use.html` restrictions.
 Archive availability is not evidence of a permissive license, and downloading at
 installation time does not resolve usage or redistribution rights. Preserve and
