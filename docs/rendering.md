@@ -176,12 +176,21 @@ After reviewing the local build, explicitly install it over an existing managed
 Python installation (this is NOT done automatically):
 
 ```sh
-python3 -m retrofetch.native_install --prefix "$HOME/.local" \
-  --frontend /path/to/local-build/retrofetch
+prefix="$HOME/.local"
+PYTHONPATH="$prefix/lib/retrofetch" python3 -m retrofetch.native_install \
+  --prefix "$prefix" --frontend /path/to/local-build/retrofetch
 ```
 
+The managed package is private to the selected prefix, so the explicit
+`PYTHONPATH` above is required unless Retrofetch is separately installed into
+that Python interpreter. Use Python 3.11 or newer.
+
 This retains `bin/retrofetch-python` and records hashes for both launchers.
-Installation is serialized and rolls back failed publication. An ordinary
+Installation is serialized. Each replacement and recovery copy is staged beside
+its own destination, including when `bin` and `lib` use separate filesystems.
+Failed publication restores successful replacements and their original modes;
+if a restoration also fails, the diagnostic identifies retained recovery files
+and the original failure. Do not remove those files until recovery is complete. An ordinary
 subsequent Python installation restores the Python entrypoint; enable the native
 frontend again explicitly if desired. Do not use an ELF from a source collection
 or an untrusted download.
@@ -243,4 +252,8 @@ verification remains linear in those contents.
 Prepared profiles also verify current Fastfetch PATH resolution: creating a new
 executable in an earlier existing PATH directory invalidates the native path,
 even when the PATH string itself has not changed. Sanitizer and regression checks
-cover this case. Actual Kitty visual checks remain pending for the native path.
+cover this case. Actual isolated Kitty 0.49.2 / Fastfetch 2.70.0 checks passed for native combined
+left/right/top layouts, animation-only playback, motion after frontend exit,
+interactive prompt placement, scrolling, clearing, and intentional custom-size
+Python fallback. Native execution was independently confirmed without a Python
+fallback. Repeat affected visual checks when changing the rendering boundary.
