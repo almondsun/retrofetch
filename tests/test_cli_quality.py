@@ -37,9 +37,18 @@ class QualityCliTests(unittest.TestCase):
         self.output.isatty = lambda: False
         with patch('retrofetch.normalization.normalize_library', return_value={'successes': 1}) as normalize, \
                 patch('retrofetch.selection_index.build_index', return_value={'entries': 1}) as build, \
+                patch('retrofetch.selection_v3.build_index_v3', return_value={'entries': 1}) as build_v3, \
                 patch('retrofetch.runtime_cache.refresh_capabilities', return_value={'supported': True}):
             self.assertEqual(self.invoke('--normalize'), 0)
         self.assertEqual(normalize.call_args.args[0], self.root)
+        build.assert_called_once_with(self.root)
+        build_v3.assert_called_once_with(self.root)
+
+    def test_native_profile_refresh_is_explicit_offline_maintenance(self):
+        self.output.isatty = lambda: False
+        with patch('retrofetch.native_profile.build_profile', return_value={'supported': True}) as build, \
+                patch('retrofetch.cli.render', side_effect=AssertionError('render during maintenance')):
+            self.assertEqual(self.invoke('--refresh-native'), 0)
         build.assert_called_once_with(self.root)
 
     def test_calibration_accepts_fastfetch_and_size_without_rendering(self):

@@ -90,9 +90,12 @@ def refresh_runtime(data_dir, *, state_file=None):
     import hashlib
     import tempfile
     from .selection_index import INDEX_NAME, _check_destination, build_index
+    from .selection_v3 import INDEX_NAME as V3_NAME, _destination, build_index_v3
 
     root = Path(data_dir).resolve(strict=True)
     destination = root / INDEX_NAME
+    destination_v3 = root / V3_NAME
+    _destination(destination_v3)
     state = _path(state_file)
     if not _safe(state):
         raise ValueError('Runtime capability state must not use symlinks')
@@ -118,12 +121,14 @@ def refresh_runtime(data_dir, *, state_file=None):
         old_state_bytes = state.read_bytes() if old_state is not None else None
         _check_destination(destination)
         old_index = destination.read_bytes() if destination.exists() else None
+        old_v3 = destination_v3.read_bytes() if destination_v3.exists() else None
         catalog = (root / 'catalog.json').read_bytes()
         with tempfile.TemporaryDirectory(prefix='.runtime-index-', dir=root) as index_dir, \
                 tempfile.TemporaryDirectory(prefix='.runtime-state-', dir=state.parent) as state_dir:
             stage = Path(index_dir)
             (stage / 'catalog.json').write_bytes(catalog)
             report = build_index(stage)
+            report_v3 = build_index_v3(stage)
             capabilities = refresh_capabilities(state_file=Path(state_dir) / 'runtime.json')
             if not capabilities['supported']:
                 raise ValueError('Fastfetch needs Kitty animation and ImageMagick support')
@@ -132,6 +137,9 @@ def refresh_runtime(data_dir, *, state_file=None):
             _check_destination(destination)
             if (destination.read_bytes() if destination.exists() else None) != old_index:
                 raise ValueError('Index changed during runtime refresh')
+            _destination(destination_v3)
+            if (destination_v3.read_bytes() if destination_v3.exists() else None) != old_v3:
+                raise ValueError('V3 index changed during runtime refresh')
             if not _safe(state):
                 raise ValueError('Runtime capability state changed during refresh')
             if (state.read_bytes() if state.exists() else None) != old_state_bytes:
@@ -140,9 +148,10 @@ def refresh_runtime(data_dir, *, state_file=None):
             try:
                 for source, target, previous, backup_root in (
                     (stage / INDEX_NAME, destination, old_index, stage),
+                    (stage / V3_NAME, destination_v3, old_v3, stage),
                     (Path(state_dir) / 'runtime.json', state, old_state_bytes, Path(state_dir)),
                 ):
-                    backup = backup_root / 'previous'
+                    backup = backup_root / ('previous-' + target.name)
                     if previous is not None:
                         backup.write_bytes(previous)
                     attempted.append((target, previous, backup))
@@ -160,7 +169,8 @@ def refresh_runtime(data_dir, *, state_file=None):
                 raise
         report['index'] = str(destination)
         capabilities['state_file'] = str(state)
-        return {'index': report, 'capabilities': capabilities}
+        report_v3['index'] = str(destination_v3)
+        return {'index': report, 'index_v3': report_v3, 'capabilities': capabilities}
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
