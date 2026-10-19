@@ -26,7 +26,7 @@ jobs:
       - name: Install fixture dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl pkg-config libpng-dev zlib1g-dev zsh fish
+          sudo apt-get install -y build-essential libssl-dev curl pkg-config libpng-dev zlib1g-dev zsh fish
           mkdir "$RUNNER_TEMP/imagemagick"
           curl --fail --location --proto '=https' --proto-redir '=https' --max-time 120 \
             https://codeload.github.com/ImageMagick/ImageMagick/tar.gz/refs/tags/7.1.1-47 \
@@ -51,7 +51,30 @@ jobs:
           python -m pip install build
           python -m build
           python scripts/check_distribution.py dist/*
+          python scripts/check_native_distribution.py dist/*.tar.gz dist/*.whl
           python -m venv "$RUNNER_TEMP/retrofetch-smoke"
           "$RUNNER_TEMP/retrofetch-smoke/bin/python" -m pip install --no-deps dist/*.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/retrofetch-smoke/bin/retrofetch" --help
+
+  native-sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install native compiler and OpenSSL headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev
+      - name: Isolated native ASAN and UBSAN fixtures
+        env:
+          CC: clang
+          PYTHONPATH: src
+          PYTHONDONTWRITEBYTECODE: '1'
+          RETROFETCH_TEST_SANITIZE: '1'
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: python -m unittest discover -s tests -p test_native.py -v
