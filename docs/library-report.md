@@ -1,4 +1,55 @@
-# Verified development library
+# Verified expanded library
+
+Both development `data/` and the installed library now contain **36,642 usable
+entries** backed by **34,604 unique normalized GIFs**: 16,088 more entries than
+the previous Essential-only library.
+
+| Expanded build result | Count |
+| --- | ---: |
+| Reconciled candidate families | 47,860 |
+| Usable entries | 36,642 |
+| Unique normalized GIFs | 34,604 |
+| Unique native selected GIFs | 36,332 |
+| Excluded families | 11,218 |
+| Converted selections | 824 |
+| Fallback selections | 28,114 |
+| Preserved notices | 627 |
+
+Sources: [Essential Collection](https://archive.org/details/animationfactoryessentialcollection),
+[250K_ANIMATIONS](https://archive.org/details/3DAnimatedClipart2AnimationFactory2008),
+and [Anime Factory](https://archive.org/details/anime-factory-1).
+Source URLs identify provenance, not redistribution permission.
+
+The observed full preparation and normalization took about seven hours.
+Independent verification hashed and decoded every accepted native and normalized
+GIF, checking visible animation, composited transparency, frame timing, and
+160×160 normalization without upscaling. All 20,554 legacy IDs, 30,741 previously
+unambiguous selector bindings, and existing categories were preserved.
+New identities are collection-qualified. A metadata-only correction namespaced
+229 new Essential IDs without changing any animation bytes.
+
+Catalog SHA-256:
+`33e5a879773d1ec6fb443aae9d103f3ec3c85a07eb075c9808176f984312ba24`.
+
+Activation used same-filesystem atomic directory exchanges after staging-copy
+hash verification. Both former libraries remain available for rollback; 20,283
+old normalized blobs remain in each active library for in-flight readers.
+Runtime caches and indexes were refreshed. Independent postactivation listing,
+searching, selection, compatibility, and rollback checks passed. The final suite
+passed 150 tests with two skips for unavailable Fish/Zsh shells. No actual Kitty
+visual playback check was performed.
+
+The raw dataset under `tmp/animation-factory-dataset/` remains unchanged.
+Its partial GIF and 12 missing payloads are excluded. Generated manifests,
+normalization reports, source-integrity metadata, and retained-asset records
+explain individual outcomes. Do not delete dataset or rollback copies without
+explicit cleanup authorization.
+
+Use the verification commands below with the current library. The following
+measurements describe the historical Essential-only build, not current totals.
+
+## Historical Essential-only library
+
 
 The complete local collection was prepared into `data/` and validated by hashes
 and GIF metadata. After independent verification of both prepared library copies,
