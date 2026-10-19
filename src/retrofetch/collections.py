@@ -3,7 +3,7 @@
 from collections import defaultdict
 import hashlib
 
-from .gif import GifError, inspect_gif
+from .gif import GifError, inspect_gif, decode_gif
 
 COLLECTIONS = {
     'essential-collection': ('Essential Collection (2001)',
@@ -40,7 +40,7 @@ def _identity(family):
     return family[len(prefix):] if family.startswith(prefix) else family
 
 
-def organize_collections(root, groups):
+def organize_collections(root, groups, *, hashes=None, validations=None):
     """Join only cross-source families anchored by identical source GIF bytes.
 
     Every Essential identity survives, even when a shared variant links several
@@ -58,16 +58,24 @@ def organize_collections(root, groups):
 
     owners = defaultdict(list)
     animated_headers = {}
+    hashes = {} if hashes is None else hashes
+    validations = {} if validations is None else validations
     for family, paths in sorted(groups.items()):
         for path in paths:
             if path.is_symlink() or not path.is_file():
                 continue
-            digest = _digest(path)
+            digest = hashes[path] = _digest(path)
             for other in owners[digest]:
-                if _collection(other) != _collection(family):
+                if _collection(other) != _collection(family) and find(family) != find(other):
                     if digest not in animated_headers:
                         try:
-                            animated_headers[digest] = inspect_gif(path).frames > 1
+                            info = inspect_gif(path)
+                            if info.frames > 1:
+                                decoded = decode_gif(path, info)
+                                validations[digest] = (info, decoded.animated, decoded.transparent)
+                                animated_headers[digest] = decoded.animated
+                            else:
+                                animated_headers[digest] = False
                         except (GifError, OSError):
                             animated_headers[digest] = False
                     if animated_headers[digest]:
@@ -118,6 +126,9 @@ def preserve_selectors(entries, legacy):
         candidates = [ids[token]] if token in ids else aliases.get(token) or names.get(token)
         if len(set(candidates)) == 1:
             bindings[token] = candidates[0]
+    for token, identity in bindings.items():
+        if token in current and token != identity:
+            raise ValueError(f'Conflicting legacy selector: {token}')
     for entry in entries:
         identity = entry['id'].casefold()
         entry['aliases'] = sorted({alias for alias in entry['aliases']
