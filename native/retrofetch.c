@@ -205,6 +205,103 @@ static int gif_size(const char *path,uint32_t *w,uint32_t *h) {
     *w=(uint32_t)header[6]|(uint32_t)header[7]<<8; *h=(uint32_t)header[8]|(uint32_t)header[9]<<8;
     return *w && *h;
 }
+static const char *environment_keys[]={"HOME","PATH","XDG_CONFIG_HOME","XDG_CONFIG_DIRS","XDG_STATE_HOME",
+    "XDG_DATA_HOME","TERM","COLORTERM","CLICOLOR","CLICOLOR_FORCE","NO_COLOR","NO_CONFIG","RETROFETCH_DATA_DIR","TMUX","STY",NULL};
+static int environment_key(const char *key) {
+    for(size_t i=0;environment_keys[i];i++) if(!strcmp(key,environment_keys[i])) return 1;
+    return 0;
+}
+static int take_string(unsigned char *b,size_t n,size_t *pos,char **value,int empty) {
+    if(n-*pos<4) return 0;
+    uint32_t length=u32(b+*pos); *pos+=4;
+    if((!empty && !length) || length>1024*1024 || length>n-*pos || memchr(b+*pos,0,length)) return 0;
+    char *s=malloc((size_t)length+1);
+    if(!s) return 0;
+    memcpy(s,b+*pos,length); s[length]=0; *pos+=length; *value=s; return 1;
+}
+/* PATH text can stay unchanged while an earlier executable appears. */
+static int current_fastfetch(char resolved[PATH_MAX]) {
+    const char *value=getenv("PATH");
+    if(!value) value="/bin:/usr/bin";
+    if(strlen(value)>1024*1024) return 0;
+    char *copy=strdup(value), *cursor=copy, *directory;
+    if(!copy) return 0;
+    int found=0;
+    while((directory=strsep(&cursor, ":"))!=NULL) {
+        char candidate[PATH_MAX]; struct stat st;
+        int length=snprintf(candidate,sizeof candidate,"%s/fastfetch",*directory?directory:".");
+        if(length>0 && length<(int)sizeof candidate && access(candidate,X_OK)==0
+                && stat(candidate,&st)==0 && !S_ISDIR(st.st_mode)) {
+            found=realpath(candidate,resolved)!=NULL;
+            break;
+        }
+    }
+    free(copy); return found;
+}
+static int profile(const char *root,int columns,int rows,double cw,double ch,int *supported,int *padding) {
+    char path[PATH_MAX]; size_t n=0;
+    if(!join(path,root,"native-runtime.v1.bin")) return 0;
+    unsigned char *b=read_file(path,&n,MAX_BYTES,1), digest[32];
+    if(!b) return 0;
+    int ok=0; size_t pos=56;
+    if(n<88 || memcmp(b,"RTFXNAT1",8) || u32(b+8)!=1 || !sha(b,n-32,digest) || memcmp(digest,b+n-32,32)) goto end;
+    uint32_t envs=u32(b+12), deps=u32(b+16), count=u32(b+20);
+    if(envs>4096 || deps>128 || !count || count>1000000 || u32(b+24)!=(uint32_t)columns || u32(b+28)!=(uint32_t)rows) goto end;
+    uint64_t bits=u64(b+32); double expected_cw, expected_ch;
+    memcpy(&expected_cw,&bits,8); bits=u64(b+40); memcpy(&expected_ch,&bits,8);
+    if(expected_cw!=cw || expected_ch!=ch || u32(b+48)>1) goto end;
+    uint32_t pad=u32(b+52);
+    if(pad!=UINT32_MAX && pad>10000) goto end;
+    size_t actual_envs=0;
+    for(size_t i=0;environment_keys[i];i++) if(getenv(environment_keys[i])) actual_envs++;
+    if(actual_envs!=envs) goto end;
+    char executable[PATH_MAX];
+    int resolved_executable=current_fastfetch(executable), bound_executable=0;
+    char *previous=NULL;
+    for(uint32_t i=0;i<envs;i++) {
+        char *key=NULL,*value=NULL;
+        if(!take_string(b,n-32,&pos,&key,0) || !take_string(b,n-32,&pos,&value,1)) { free(key); free(value); free(previous); goto end; }
+        const char *current=getenv(key);
+        int valid=environment_key(key) && current && !strcmp(current,value) && (!previous || strcmp(previous,key)<0);
+        free(previous); previous=key; free(value);
+        if(!valid) { free(previous); goto end; }
+    }
+    free(previous);
+    for(uint32_t i=0;i<deps;i++) {
+        char *file=NULL;
+        if(!take_string(b,n-32,&pos,&file,0)) goto end;
+        if(file[0]!='/' || n-32-pos<73 || b[pos]>1) { free(file); goto end; }
+        int exists=b[pos++], valid;
+        if(exists) valid=file_digest(file,digest) && !memcmp(digest,b+pos,32);
+        else { struct stat st; valid=lstat(file,&st)!=0 && errno==ENOENT; }
+        pos+=32;
+        struct stat identity;
+        if(exists) {
+            if(stat(file,&identity)) valid=0;
+            else {
+                uint64_t expected[5]={(uint64_t)identity.st_dev,(uint64_t)identity.st_ino,(uint64_t)identity.st_size,
+                    (uint64_t)identity.st_mtim.tv_sec*1000000000u+(uint64_t)identity.st_mtim.tv_nsec,
+                    (uint64_t)identity.st_ctim.tv_sec*1000000000u+(uint64_t)identity.st_ctim.tv_nsec};
+                for(size_t k=0;k<5;k++) if(expected[k]!=u64(b+pos+8*k)) valid=0;
+            }
+        }
+        if(valid && exists && resolved_executable) {
+            char canonical[PATH_MAX];
+            if(realpath(file,canonical) && !strcmp(canonical,executable)) bound_executable=1;
+        }
+        free(file); pos+=40;
+        if(!valid) goto end;
+    }
+    if(u32(b+48) && !bound_executable) goto end;
+    if((uint64_t)count*4!=n-32-pos) goto end;
+    for(uint32_t i=0;i<count;i++) if(u32(b+pos+4*(size_t)i)>=1000000 || (i && u32(b+pos+4*(size_t)(i-1))>=u32(b+pos+4*(size_t)i))) goto end;
+    eligible_bytes=malloc((size_t)count*4);
+    if(!eligible_bytes) goto end;
+    memcpy(eligible_bytes,b+pos,(size_t)count*4); eligible_count=count;
+    *supported=(int)u32(b+48); *padding=pad==UINT32_MAX?-1:(int)pad; ok=1;
+end:
+    free(b); return ok;
+}
 static int positive_size(const char *s,int *w,int *h) {
     char *end; errno=0; long a=strtol(s,&end,10);
     if(errno || end==s || (*end!='x' && *end!='X') || a<=0 || a>INT_MAX) return 0;
@@ -217,6 +314,21 @@ static int config_exists(void) {
     if(!xdg(base,"XDG_CONFIG_HOME",".config") || !join(path,base,"retrofetch/config.toml")) return 1;
     if(lstat(path,&st)==0) return 1;
     return errno!=ENOENT;
+}
+static char *quote(const char *path) {
+    int safe=1;
+    for(const unsigned char *c=(const unsigned char *)path;*c;c++) {
+        if(!((*c>='a' && *c<='z') || (*c>='A' && *c<='Z') || (*c>='0' && *c<='9') || strchr("_@%+=:,./-",*c))) safe=0;
+    }
+    if(safe) return strdup(path);
+    size_t n=strlen(path); char *out=malloc(5*n+3);
+    if(!out) return NULL;
+    char *p=out; *p++='\'';
+    for(size_t i=0;i<n;i++) {
+        if(path[i]=='\'') { memcpy(p,"'\"'\"'",5); p+=5; }
+        else *p++=path[i];
+    }
+    *p++='\''; *p=0; return out;
 }
 int main(int argc,char **argv) {
     int animation=0,startup=0,bw=20,bh=10,custom_size=0;
@@ -246,7 +358,10 @@ int main(int argc,char **argv) {
     else if(getenv("RETROFETCH_DATA_DIR") && *getenv("RETROFETCH_DATA_DIR")) {
         if(!expanded(data,getenv("RETROFETCH_DATA_DIR"))) return fallback(argv);
     } else if(!xdg(temp,"XDG_DATA_HOME",".local/share") || !join(data,temp,"retrofetch")) return fallback(argv);
-    if(!animation || config_exists()) return fallback(argv);
+    int supported=0,padding=-1,has_profile=0;
+    if(realpath(data,root)) has_profile=profile(root,columns,rows,cw,ch,&supported,&padding);
+    if(config_exists() && !has_profile) return fallback(argv);
+    if(!animation && (!has_profile || !supported || custom_size)) return fallback(argv);
     char path[PATH_MAX]; uint32_t expected_w=0,expected_h=0;
     if(file) {
         if(!expanded(temp,file) || !realpath(temp,path)) return fallback(argv);
@@ -260,9 +375,13 @@ int main(int argc,char **argv) {
     }
     uint32_t width,height;
     if(!gif_size(path,&width,&height) || (expected_w && (expected_w!=width || expected_h!=height))) return fallback(argv);
+    if(!animation && (width!=160 || height!=160)) return fallback(argv);
     if(bw>columns-1) bw=columns-1;
     if(bh>rows-2) bh=rows-2;
+    double scale=fmin(1,fmin(bw*cw/width,bh*ch/height));
+    int display_width=(int)(width*scale/cw);
     char window[128];
+    if(animation) {
         int px=(int)(bw*cw),py=(int)(bh*ch);
         snprintf(window,sizeof window,"--use-window-size=%d,%d,%d,%d",bw,bh,px,py);
         char *args[]={"kitten","icat","--engine=builtin","--stdin=no","--align=left","--transfer-mode=stream","--passthrough=none","--loop=-1",window,path,NULL};
@@ -273,4 +392,28 @@ int main(int argc,char **argv) {
         }
         if(result && !startup) fprintf(stderr,"retrofetch: animation rendering failed (exit %d)\n",result);
         return result?2:0;
+    }
+    double pixels=display_width?display_width*cw:fmin(width,bh*ch*width/height);
+    if(fmin(pixels,pixels*height/width)<1) return fallback(argv);
+    char dw[32],dh[32],pad[32];
+    snprintf(dw,sizeof dw,"%d",display_width);
+    snprintf(dh,sizeof dh,"%d",!display_width && height>bh*ch?bh:0);
+    snprintf(pad,sizeof pad,"%d",padding);
+    char *quoted=quote(path);
+    if(!quoted) return fallback(argv);
+    char *args[]={"fastfetch","--logo-type","kitty","--logo",quoted,"--logo-animation-frame","0","--logo-width",dw,"--logo-height",dh,NULL,NULL,NULL};
+    if(padding>=0) { args[11]="--logo-padding-top"; args[12]=pad; }
+    else if(!startup) fputs("retrofetch: layout missing, stale, or top-positioned; native placement retained (run --calibrate-layout for side-by-side centering)\n",stderr);
+    int result=child(args); free(quoted);
+    if(!result) return 0;
+    if(!startup) {
+        if(result==-127) fputs("retrofetch: fastfetch executable is unavailable; falling back to Fastfetch\n",stderr);
+        else fprintf(stderr,"retrofetch: animation rendering failed (exit %d); falling back to Fastfetch\n",result);
+    }
+    char *plain[]={"fastfetch",NULL}; result=child(plain);
+    if(result==-127) {
+        if(!startup) fputs("retrofetch: fastfetch executable is unavailable\n",stderr);
+        return 1;
+    }
+    return result;
 }

@@ -93,6 +93,82 @@ class NativeTests(unittest.TestCase):
         (root / 'selection.v3.idx').write_bytes(body + hashlib.sha256(body).digest())
         return root
 
+    def prepare_profile(self, root, padding=3):
+        from retrofetch.native_profile import build_profile
+        helper = self.helpers / 'fastfetch'
+        helper.write_text('#!/usr/bin/python3\nimport json,sys\nprint("FASTFETCH:"+json.dumps(sys.argv[1:]))\nsys.exit(4 if "--logo" in sys.argv and "--logo-type" in sys.argv and '+repr(self.env.get('FAIL_RENDER') == '1')+' else 0)\n')
+        helper.chmod(0o755)
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch('retrofetch.runtime_cache.cached_capabilities', return_value=True), \
+                mock.patch('retrofetch.calibration._config_files', return_value=[]), \
+                mock.patch('retrofetch.calibration.layout_padding', return_value=padding):
+            return build_profile(root, geometry=(80, 24, 8., 16.))
+
+    def test_prepared_combined_uses_finite_fastfetch(self):
+        root = self.index()
+        self.prepare_profile(root)
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('FASTFETCH:', result.stdout)
+        self.assertIn('--logo-padding-top', result.stdout)
+        self.assertNotIn('FALLBACK:', result.stdout)
+        self.assertEqual(result.stderr, '')
+
+    def test_new_earlier_path_executable_invalidates_prepared_profile(self):
+        earlier = self.home / 'earlier'
+        earlier.mkdir()
+        self.env['PATH'] = str(earlier) + ':' + self.env['PATH']
+        root = self.index()
+        self.prepare_profile(root)
+        replacement = earlier / 'fastfetch'
+        replacement.write_text('#!/bin/sh\necho UNBOUND_FASTFETCH\n')
+        replacement.chmod(0o755)
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('FALLBACK:', result.stdout)
+        self.assertNotIn('UNBOUND_FASTFETCH', result.stdout)
+
+    def test_combined_failure_runs_plain_fastfetch(self):
+        self.env['FAIL_RENDER'] = '1'
+        root = self.index()
+        self.prepare_profile(root)
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count('FASTFETCH:'), 2)
+        self.assertIn('FASTFETCH:[]', result.stdout)
+        self.assertIn('falling back to Fastfetch', result.stderr)
+
+    def test_profile_environment_or_dependency_change_falls_back(self):
+        root = self.index()
+        self.prepare_profile(root)
+        self.env['COLORTERM'] = 'changed'
+        result = self.run_native(['--data-dir', str(root)], tty=True)
+        self.assertIn('FALLBACK:', result.stdout)
+        self.env.pop('COLORTERM')
+        helper = self.helpers / 'fastfetch'
+        os.utime(helper, None)
+        self.assertIn('FALLBACK:', self.run_native(['--data-dir', str(root)], tty=True).stdout)
+
+    def test_prepared_filter_configuration(self):
+        root = self.index()
+        config = self.home / 'config/retrofetch/config.toml'
+        config.parent.mkdir(parents=True)
+        config.write_text('include=["retro"]')
+        report = self.prepare_profile(root)
+        self.assertEqual(report['eligible'], 1)
+        result = self.run_native(['--data-dir', str(root), 'ART'], tty=True)
+        self.assertIn('FASTFETCH:', result.stdout)
+        config.write_text('exclude=["retro"]')
+        self.assertIn('FALLBACK:', self.run_native(['--data-dir', str(root)], tty=True).stdout)
+
+    def test_missing_padding_warning_and_startup_quiet(self):
+        root = self.index()
+        self.prepare_profile(root, padding=None)
+        result = self.run_native(['--data-dir', str(root)], tty=True)
+        self.assertIn('layout missing, stale, or top-positioned', result.stderr)
+        result = self.run_native(['--data-dir', str(root), '--startup'], tty=True)
+        self.assertEqual(result.stderr, '')
+
     def test_unknown_options_preserve_exact_argv(self):
         args = ['--animation-only', '--unknown', 'a b', '--size=2x3']
         result = self.run_native(args)
