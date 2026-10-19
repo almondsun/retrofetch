@@ -252,7 +252,8 @@ def _install(prefix, data_dir, *, source, cache_dir, progress, state):
                         raise
                 else:
                     if existed:
-                        target.rename(backup)
+                        # Retain the old inode without removing the active file.
+                        os.link(target, backup, follow_symlinks=False)
                     if candidate == new_launcher:
                         os.replace(candidate, target)
                     else:
@@ -260,7 +261,9 @@ def _install(prefix, data_dir, *, source, cache_dir, progress, state):
                 retained.append(str(backup_root))
         except BaseException:
             for target, backup, existed in reversed(operations):
-                if backup.exists() or not existed:
+                if backup.is_file():
+                    os.replace(backup, target)
+                elif backup.exists() or not existed:
                     if target.is_dir():
                         shutil.rmtree(target)
                     else:

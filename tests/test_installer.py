@@ -102,6 +102,30 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual((self.data / "sentinel").read_text(), "original")
         self.assertEqual(((self.prefix / "bin/retrofetch").read_bytes(), self.runtime.read_bytes()), before)
 
+    def test_existing_launcher_remains_available_until_atomic_replacement(self):
+        with patch("retrofetch.installer.prepare_library", return_value={}):
+            install(self.prefix, self.data, source=self.source)
+            (self.data / "catalog.json").write_text('{"version":1,"animations":[]}')
+            launcher = self.prefix / "bin/retrofetch"
+            before = launcher.read_bytes()
+            replace = os.replace
+            observed = []
+
+            def check_launcher(candidate, target):
+                if Path(target) == launcher:
+                    self.assertTrue(launcher.is_file())
+                    self.assertEqual(launcher.read_bytes(), before)
+                    result = subprocess.run([str(launcher), "--help"], capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed.append(True)
+                return replace(candidate, target)
+
+            with patch("retrofetch.installer.os.replace", check_launcher):
+                report = install(self.prefix, self.data, source=self.source)
+            self.assertEqual(observed, [True])
+            backups = [Path(path) / "retrofetch" for path in report["rollback_directories"]]
+            self.assertTrue(any(path.is_file() and path.read_bytes() == before for path in backups))
+
     def test_legacy_catalog_passed_and_rollback_retained(self):
         self.data.mkdir()
         (self.data / "catalog.json").write_text('{"version":1,"animations":[]}')
