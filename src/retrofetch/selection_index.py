@@ -1,4 +1,4 @@
-"""Content-bound read-only accelerators for unfiltered random selection."""
+"""Content-bound read-only accelerators for catalog selection."""
 
 import hashlib
 import json
@@ -8,7 +8,7 @@ import random
 import stat
 import struct
 
-from .catalog import _entries_from_document, _entry_from_row, _validate_selected
+from .catalog import _entries_from_document, _entry_from_row, _validate_selected, _validate_row, _select
 
 INDEX_NAME = 'selection.v2.idx'
 LEGACY_INDEX_NAME = 'selection.sqlite3'
@@ -146,26 +146,52 @@ def _legacy_selection(root, rng):
         return None
 
 
-def select_random(data_dir: Path, rng=None):
-    """Return a safe uniform entry, or None for canonical-catalog fallback.
+def select_indexed(data_dir: Path, identifier=None, include=(), exclude=(), rng=None):
+    """Select from a verified index, or return None for canonical fallback.
 
-    A present but invalid v2 index never downgrades to legacy SQLite. Both index
-    and catalog are fully hashed each v2 lookup; startup never writes anything.
+    Matching errors are semantic results and propagate; invalid index metadata
+    and selected asset paths instead require canonical validation. Unfiltered
+    random selection retains its single-record fast path and legacy support.
     """
+    unfiltered = identifier is None and not include and not exclude
+    generator = rng if rng is not None else random
     try:
         root = Path(data_dir).resolve(strict=True)
         path = root / INDEX_NAME
-        generator = rng if rng is not None else random
         try:
             path.lstat()
         except FileNotFoundError:
-            return _legacy_selection(root, generator)
+            return _legacy_selection(root, generator) if unfiltered else None
         snapshot, start, offsets, expected = _read_binary(path)
         if hashlib.sha256((root / 'catalog.json').read_bytes()).digest() != expected:
             return None
-        ordinal = generator.randrange(len(offsets) - 1)
-        begin, end = offsets[ordinal:ordinal + 2]
-        record = json.loads(snapshot[start + begin:start + end].decode('utf-8'))
-        return _validate_selected(_entry_from_row(record, root))
+        if unfiltered:
+            ordinal = generator.randrange(len(offsets) - 1)
+            begin, end = offsets[ordinal:ordinal + 2]
+            record = json.loads(snapshot[start + begin:start + end])
+            return _validate_selected(_entry_from_row(record, root))
+        # Existing records are adjacent JSON objects. Join once and decode one
+        # array rather than paying a Python JSON decoder call per record.
+        payload = memoryview(snapshot)[start:start + offsets[-1]]
+        records = json.loads(b'[' + b','.join(payload[begin:end]
+                            for begin, end in zip(offsets, offsets[1:])) + b']')
+        identities = set()
+        for row in records:
+            _validate_row(row)
+            identity = row['id'].casefold()
+            if identity in identities:
+                return None
+            identities.add(identity)
     except (OSError, ValueError, TypeError, OverflowError, struct.error):
         return None
+    # Keep semantic failures outside the infrastructure/fallback exception scope.
+    selected = _select(records, identifier, include, exclude, generator, dict.__getitem__)
+    try:
+        return _validate_selected(_entry_from_row(selected, root))
+    except (OSError, ValueError, TypeError, OverflowError):
+        return None
+
+
+def select_random(data_dir: Path, rng=None):
+    """Compatibility wrapper for unfiltered random selection."""
+    return select_indexed(data_dir, rng=rng)
