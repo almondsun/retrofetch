@@ -9,7 +9,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from retrofetch.installer import InstallationError, check_dependencies, install
+from retrofetch.installer import InstallationError, check_dependencies, install, main, _check_space
+import hashlib
+import io
+import json
+from types import SimpleNamespace
 
 
 class InstallerTests(unittest.TestCase):
@@ -21,9 +25,114 @@ class InstallerTests(unittest.TestCase):
         self.data = self.root / "data"
         self.source = self.root / "source"
         self.source.mkdir()
+        self.runtime = self.root / "state/runtime.json"
+        for target, replacement in (
+            ("retrofetch.installer._runtime_path", lambda: self.runtime),
+            ("retrofetch.installer._stage_capabilities", lambda path: path.write_text('{"owner":"retrofetch-runtime","version":1,"supported":true}')),
+        ):
+            mocked = patch(target, replacement)
+            mocked.start()
+            self.addCleanup(mocked.stop)
         self.tools = patch("retrofetch.installer.check_dependencies")
         self.tools.start()
         self.addCleanup(self.tools.stop)
+
+    def test_download_requires_explicit_acceptance_before_network(self):
+        with patch("retrofetch.installer.acquire_collections") as acquire, self.assertRaises(InstallationError):
+            install(self.prefix, self.data, cache_dir=self.root / "cache")
+        acquire.assert_not_called()
+        self.assertFalse(self.prefix.exists())
+
+    def test_failed_publication_restores_library_and_runtime(self):
+        self.data.mkdir()
+        (self.data / "old").write_text("keep")
+        (self.data / "catalog.json").write_text('{"version":1,"animations":[]}')
+        with patch("retrofetch.installer.prepare_library", return_value={}), \
+             patch("retrofetch.installer.os.replace", side_effect=OSError("failed")), self.assertRaises(OSError):
+            install(self.prefix, self.data, source=self.source)
+        self.assertEqual((self.data / "old").read_text(), "keep")
+
+    def test_noninteractive_cli_refuses_download(self):
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stderr", new_callable=io.StringIO), \
+             patch("retrofetch.installer.acquire_collections") as acquire:
+            code = main(["--prefix", str(self.prefix), "--data-dir", str(self.data)])
+        self.assertEqual(code, 1)
+        acquire.assert_not_called()
+        self.assertFalse(self.prefix.exists())
+
+    def test_space_check_combines_same_filesystem_budgets(self):
+        with patch("retrofetch.installer.shutil.disk_usage", return_value=SimpleNamespace(free=64 * 1024**3)), \
+             self.assertRaises(InstallationError):
+            _check_space(self.root / "cache", self.data)
+        with patch("retrofetch.installer.shutil.disk_usage", return_value=SimpleNamespace(free=65 * 1024**3)) as usage:
+            _check_space(self.root / "cache", self.data)
+        self.assertEqual(usage.call_count, 1)
+
+    def test_symlink_ancestor_is_rejected(self):
+        real = self.root / "real"
+        real.mkdir()
+        link = self.root / "link"
+        link.symlink_to(real, target_is_directory=True)
+        with patch("retrofetch.installer.prepare_library") as prepare, self.assertRaises(InstallationError):
+            install(link / "local", self.data, source=self.source)
+        prepare.assert_not_called()
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_unmanaged_library_is_preserved(self):
+        self.data.mkdir()
+        (self.data / "private").write_text("keep")
+        with patch("retrofetch.installer.prepare_library") as prepare, self.assertRaises(InstallationError):
+            install(self.prefix, self.data, source=self.source)
+        prepare.assert_not_called()
+        self.assertEqual((self.data / "private").read_text(), "keep")
+
+    def test_runtime_publication_failure_rolls_back_all_outputs(self):
+        with patch("retrofetch.installer.prepare_library", return_value={}):
+            install(self.prefix, self.data, source=self.source)
+            (self.data / "catalog.json").write_text('{"version":1,"animations":[]}')
+            (self.data / "sentinel").write_text("original")
+            before = (self.prefix / "bin/retrofetch").read_bytes(), self.runtime.read_bytes()
+            rename = Path.rename
+            def fail_state(path, target):
+                if path.name == "runtime.json" and str(path.parent).find(".retrofetch-stage-") >= 0:
+                    raise OSError("runtime publication failed")
+                return rename(path, target)
+            with patch.object(Path, "rename", fail_state), self.assertRaises(OSError):
+                install(self.prefix, self.data, source=self.source)
+        self.assertEqual((self.data / "sentinel").read_text(), "original")
+        self.assertEqual(((self.prefix / "bin/retrofetch").read_bytes(), self.runtime.read_bytes()), before)
+
+    def test_legacy_catalog_passed_and_rollback_retained(self):
+        self.data.mkdir()
+        (self.data / "catalog.json").write_text('{"version":1,"animations":[]}')
+        (self.data / "sentinel").write_text("keep")
+        with patch("retrofetch.installer.prepare_library", return_value={}) as prepare:
+            report = install(self.prefix, self.data, source=self.source)
+        self.assertEqual(prepare.call_args.kwargs["legacy_catalog"], self.data / "catalog.json")
+        self.assertTrue(any((Path(path) / "data/sentinel").is_file() for path in report["rollback_directories"]))
+
+    def test_upgrade_retains_previous_content_addressed_assets(self):
+        contents = b"previous validated GIF"
+        digest = hashlib.sha256(contents).hexdigest()
+        relative = "animations/" + digest + ".gif"
+        (self.data / "animations").mkdir(parents=True)
+        (self.data / relative).write_bytes(contents)
+        (self.data / "catalog.json").write_text(json.dumps({"version": 1, "animations": [{
+            "id": "legacy", "name": "legacy", "path": relative, "sha256": digest,
+            "width": 1, "height": 1, "frames": 2, "categories": [], "aliases": []}]}))
+        with patch("retrofetch.installer.prepare_library", return_value={}):
+            install(self.prefix, self.data, source=self.source)
+        self.assertEqual((self.data / relative).read_bytes(), contents)
+
+    def test_capability_failure_leaves_existing_library_and_launcher(self):
+        with patch("retrofetch.installer.prepare_library", return_value={}):
+            install(self.prefix, self.data, source=self.source)
+            (self.data / "catalog.json").write_text('{"version":1,"animations":[]}')
+            before = self.runtime.read_bytes(), (self.prefix / "bin/retrofetch").read_bytes()
+            with patch("retrofetch.installer._stage_capabilities", side_effect=ValueError("unsupported")), self.assertRaises(ValueError):
+                install(self.prefix, self.data, source=self.source)
+        self.assertTrue((self.data / "catalog.json").is_file())
+        self.assertEqual((self.runtime.read_bytes(), (self.prefix / "bin/retrofetch").read_bytes()), before)
 
     def test_install_spaces_repeat_and_untouched_config(self):
         config = self.root / "config/fastfetch.jsonc"
@@ -60,9 +169,10 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.prefix / "bin/retrofetch").exists())
 
     def test_acquisition_only_without_local_source(self):
-        with patch("retrofetch.installer.acquire_source", return_value=self.source) as acquire, \
-             patch("retrofetch.installer.prepare_library", return_value={}):
-            install(self.prefix, self.data, cache_dir=self.root / "cache")
+        with patch("retrofetch.installer.acquire_collections", return_value=self.source) as acquire, \
+             patch("retrofetch.installer.prepare_library", return_value={}), \
+             patch("retrofetch.installer._check_space"):
+            install(self.prefix, self.data, cache_dir=self.root / "cache", accept_source_notices=True)
         acquire.assert_called_once_with(self.root / "cache", progress=None)
 
     def test_missing_dependency_has_no_install_effects(self):
