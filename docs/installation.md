@@ -103,3 +103,27 @@ dependencies. Packaging the code alone does not download or prepare assets;
 the explicit installer is still the complete installation workflow.
 The build backend requires setuptools 77.0.3 or newer for the SPDX license
 metadata; see the [Python packaging guide](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/).
+
+
+## Optional native acceleration
+
+The default installation remains Python-only. The source distribution also
+contains a C frontend and explicit build helper; using it requires a C11 compiler,
+OpenSSL development headers and libcrypto. Wheels do not contain a native ELF.
+Follow the [native setup guide](rendering.md#optional-v3native-acceleration) after
+installing the managed Python package. Its explicit activation command sets
+`PYTHONPATH` to the chosen prefix's private package directory; ordinary
+`python3 -m retrofetch.native_install` cannot assume that directory is importable.
+
+Run `retrofetch --refresh-runtime` to prepare v2/v3 indexes and capabilities,
+then `retrofetch --refresh-native` in the target Kitty terminal. Neither command
+reimports or converts animation assets. Native profiles bind the environment,
+terminal geometry, settings and dependencies. Stale or unsupported profiles
+preserve Python playback rather than silently changing configuration or layout.
+
+Native activation preserves the Python companion and validates managed ownership.
+Publication and recovery use destination-local staging for separate filesystems.
+If rollback cannot complete, keep the reported recovery directories and resolve
+the original failure before retrying; they contain prior bytes and permissions.
+An ordinary Python reinstall restores the Python entrypoint; explicitly enable
+the native frontend again afterward if desired. No startup hook is enabled.
