@@ -4,6 +4,8 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
+import stat
 from pathlib import Path
 import tempfile
 
@@ -69,34 +71,61 @@ def install_native(prefix, frontend):
             raise InstallationError('a managed Python installation is required')
         new_marker = json.dumps(dict(managed_by='retrofetch', version=2,
             native_sha256=_digest(binary), python_sha256=_digest(python))).encode() + b'\n'
-        with tempfile.TemporaryDirectory(prefix='.native-install-', dir=prefix / 'bin') as directory:
-            staged = []
-            for i, (target, data, mode) in enumerate(((companion, python, 0o755),
-                    (marker, new_marker, 0o644), (launcher, binary, 0o755))):
-                path = Path(directory) / str(i)
+        modes = {path: stat.S_IMODE(path.stat().st_mode) if data is not None else None
+                 for path, data in previous.items()}
+        directories, staged, retained = [], [], set()
+        try:
+            for target, data, mode in ((companion, python, 0o755),
+                    (marker, new_marker, 0o644), (launcher, binary, 0o755)):
+                # Renames must remain on the target's filesystem, including recovery.
+                directory = Path(tempfile.mkdtemp(prefix='.native-install-', dir=target.parent))
+                directories.append(directory)
+                backup = directory / 'original'
+                if previous[target] is not None:
+                    backup.write_bytes(previous[target])
+                    backup.chmod(modes[target])
+                path = directory / 'replacement'
                 path.write_bytes(data)
                 path.chmod(mode)
-                staged.append((path, target))
+                staged.append((path, target, backup))
             for path, data in previous.items():
                 _safe_path(path)
-                if (path.read_bytes() if path.exists() else None) != data:
+                if ((path.read_bytes() if path.exists() else None) != data
+                        or (stat.S_IMODE(path.stat().st_mode) if path.exists() else None) != modes[path]):
                     raise InstallationError('installation changed during native staging')
             attempted = []
             try:
-                for source, target in staged:
-                    attempted.append(target)
+                for source, target, backup in staged:
+                    # Signals may arrive after rename but before Python sees its return.
+                    attempted.append((target, backup))
                     os.replace(source, target)
-            except BaseException:
-                for i, target in enumerate(reversed(attempted)):
-                    data = previous[target]
-                    if data is None:
-                        target.unlink(missing_ok=True)
-                    else:
-                        restore = Path(directory) / ('restore-' + str(i))
-                        restore.write_bytes(data)
-                        restore.chmod(0o644 if target == marker else 0o755)
-                        os.replace(restore, target)
+            except BaseException as cause:
+                failures = []
+                for target, backup in reversed(attempted):
+                    try:
+                        current = target.read_bytes() if target.exists() else None
+                        mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
+                        if current == previous[target] and mode == modes[target]:
+                            continue
+                        if previous[target] is None:
+                            target.unlink(missing_ok=True)
+                        else:
+                            os.replace(backup, target)
+                    except BaseException as error:
+                        # Do not let one restore failure prevent other restores or
+                        # delete the only remaining copy of the original bytes.
+                        retained.add(backup.parent)
+                        recovery = backup if previous[target] is not None else backup.parent
+                        failures.append(f'{target}: {error}; recovery: {recovery}'
+                                        + (' (target was originally absent)' if previous[target] is None else ''))
+                if failures:
+                    raise InstallationError(f'native publication failed: {cause}; rollback incomplete: '
+                                            + '; '.join(failures)) from cause
                 raise
+        finally:
+            for directory in directories:
+                if directory not in retained:
+                    shutil.rmtree(directory)
         return {'launcher': str(launcher), 'python_launcher': str(companion)}
     finally:
         os.close(fd)

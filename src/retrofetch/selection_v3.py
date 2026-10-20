@@ -55,7 +55,10 @@ def _read(path):
     records = list(RECORD.iter_unpack(memoryview(blob)[HEADER.size:HEADER.size + nr]))
     if any(w < 1 or h < 1 or f < 2 for _, w, h, f in records):
         raise ValueError('Invalid animation dimensions')
-    metadata = json.loads(blob[HEADER.size + nr:HEADER.size + nr + nm])
+    try:
+        metadata = json.loads(blob[HEADER.size + nr:HEADER.size + nr + nm])
+    except RecursionError as error:
+        raise ValueError('Index metadata nesting exceeds decoder limits') from error
     if not isinstance(metadata, dict) or set(metadata) != {'category_names', 'rows'}:
         raise ValueError('Invalid metadata object')
     categories, rows = metadata['category_names'], metadata['rows']

@@ -1,11 +1,15 @@
 """Compatibility and corruption probes for the compact offline index."""
 import json
+import hashlib
+import io
+import os
+from unittest.mock import patch
 import random
 import unittest
 
 import test_selection_index as fixtures
 from retrofetch.catalog import Catalog
-from retrofetch.selection_v3 import INDEX_NAME, build_index_v3, select_v3
+from retrofetch.selection_v3 import HEADER, INDEX_NAME, build_index_v3, select_v3
 
 
 class SelectionV3Tests(unittest.TestCase):
@@ -60,3 +64,32 @@ class SelectionV3Tests(unittest.TestCase):
         asset.unlink()
         asset.symlink_to(self.root / self.rows[1]['path'])
         self.assertIsNone(select_v3(self.root, 'cat0'))
+
+    def test_deep_metadata_falls_back_and_maintenance_preserves_bytes(self):
+        build_index_v3(self.root)
+        path = self.root / INDEX_NAME
+        original = path.read_bytes()
+        magic, version, count, digest, nr, nm, nk = HEADER.unpack_from(original)
+        nested = b'[' * 100000 + b'0' + b']' * 100000
+        body = (HEADER.pack(magic, version, count, digest, nr, len(nested), nk)
+                + original[HEADER.size:HEADER.size + nr] + nested
+                + original[HEADER.size + nr + nm:-32])
+        path.write_bytes(body + hashlib.sha256(body).digest())
+        config = self.root / 'settings.toml'
+        config.write_text('')
+        before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertIsNone(select_v3(self.root, 'cat0'))
+        from retrofetch.cli import main
+        output, errors = io.StringIO(), io.StringIO()
+        output.isatty = lambda: True
+        with patch.dict(os.environ, {'TERM': 'xterm-kitty', 'TMUX': '', 'STY': ''}), \
+                patch('sys.stdout', output), patch('sys.stderr', errors), \
+                patch('retrofetch.cli.image_size', return_value=(16, 20)), \
+                patch('retrofetch.cli.render') as render:
+            self.assertEqual(main(['--data-dir', str(self.root), '--config', str(config), 'cat0']), 0)
+        self.assertEqual(render.call_args.args[0], self.root / self.rows[0]['path'])
+        self.assertEqual(output.getvalue(), '')
+        self.assertEqual(errors.getvalue(), '')
+        with self.assertRaises(ValueError):
+            build_index_v3(self.root)
+        self.assertEqual({p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}, before)
