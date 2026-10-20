@@ -1,15 +1,42 @@
 """Catalog discovery, offline preparation, and native terminal rendering."""
 
 import argparse
-import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
-from .rendering import image_size, plain_fastfetch, render
-from .catalog import Catalog
-from .config import data_directory, load_settings
+class Catalog:
+    """Defer catalog imports while preserving the CLI's patchable loading seam."""
+
+    @staticmethod
+    def load(*args, **kwargs):
+        from .catalog import Catalog as implementation
+        return implementation.load(*args, **kwargs)
+
+
+def image_size(*args, **kwargs):
+    from .rendering import image_size as implementation
+    return implementation(*args, **kwargs)
+
+
+def render(*args, **kwargs):
+    from .rendering import render as implementation
+    return implementation(*args, **kwargs)
+
+
+def plain_fastfetch(*args, **kwargs):
+    from .rendering import plain_fastfetch as implementation
+    return implementation(*args, **kwargs)
+
+
+def data_directory(*args, **kwargs):
+    from .config import data_directory as implementation
+    return implementation(*args, **kwargs)
+
+
+def load_settings(*args, **kwargs):
+    from .config import load_settings as implementation
+    return implementation(*args, **kwargs)
 
 
 def size_box(value):
@@ -41,6 +68,7 @@ def main(argv=None):
     modes.add_argument("--prepare", type=Path, metavar="SOURCE", help="prepare the full library upfront from an extracted collection")
     modes.add_argument("--validate", action="store_true", help="verify prepared catalog file hashes and GIF metadata")
     modes.add_argument("--normalize", action="store_true", help="normalize prepared animations upfront and rebuild their selection index")
+    modes.add_argument("--refresh-native", action="store_true", help="prepare an optional native profile for the current terminal after explicit runtime refresh")
     modes.add_argument("--refresh-runtime", action="store_true", help="rebuild the selection index and refresh Fastfetch capability metadata without converting assets")
     parser.add_argument("--layout-mode", choices=("fixed-height", "width-sensitive"), help="calibration contract: fixed-height reuses rows across tiling/font changes; default: width-sensitive")
     modes.add_argument("--calibrate-layout", action="store_true", help="measure Fastfetch layout once for centered native logos; rerun after layout changes")
@@ -48,7 +76,7 @@ def main(argv=None):
     if args.animation_only and args.fastfetch_config:
         parser.error("--fastfetch-config cannot be used with --animation-only")
     discovery = args.list or args.search is not None or args.categories
-    maintenance = args.prepare is not None or args.validate or args.normalize or args.refresh_runtime
+    maintenance = args.prepare is not None or args.validate or args.normalize or args.refresh_runtime or args.refresh_native
     if args.layout_mode and not args.calibrate_layout:
         parser.error("--layout-mode requires --calibrate-layout")
     if args.file and args.animation:
@@ -65,7 +93,12 @@ def main(argv=None):
         parser.error("calibration cannot be combined with animation selection or startup")
     directory = args.data_dir.expanduser() if args.data_dir is not None else data_directory()
     if maintenance:
+        import json
         try:
+            if args.refresh_native:
+                from .native_profile import build_profile
+                print(json.dumps(build_profile(directory), sort_keys=True))
+                return 0
             if args.refresh_runtime:
                 from .runtime_cache import refresh_runtime
                 report = refresh_runtime(directory)
@@ -84,6 +117,8 @@ def main(argv=None):
                 else:
                     report = normalize_library(directory, progress=progress)
                 build_index(directory)
+                from .selection_v3 import build_index_v3
+                build_index_v3(directory)
                 from .runtime_cache import refresh_capabilities
                 refresh_capabilities()
                 print(json.dumps({key: value for key, value in report.items()
@@ -97,6 +132,8 @@ def main(argv=None):
             return 1
     kitty = os.environ.get("TERM") == "xterm-kitty" and not (os.environ.get("TMUX") or os.environ.get("STY"))
     if args.calibrate_layout:
+        import json
+        import subprocess
         from .calibration import calibrate_layout
         if not sys.stdout.isatty() or not kitty or not sys.platform.startswith('linux'):
             print('retrofetch: calibration requires an interactive Linux Kitty terminal', file=sys.stderr)
@@ -121,10 +158,12 @@ def main(argv=None):
         include = settings.include if args.include is None else args.include
         exclude = settings.exclude if args.exclude is None else args.exclude
         if discovery or args.file is None:
-            from .selection_index import select_random
-            selected = (select_random(directory) if not discovery and args.animation is None
-                        and not include and not exclude else None)
-            catalog = Catalog.load(directory) if selected is None else None
+            selected = None
+            if not discovery:
+                from .selection_index import select_indexed
+                selected = select_indexed(directory, args.animation, include, exclude)
+            catalog = (Catalog.load(directory)
+                       if selected is None else None)
             if discovery:
                 entries = (catalog.search(args.search, include, exclude) if args.search is not None
                            else catalog.filtered(include, exclude))

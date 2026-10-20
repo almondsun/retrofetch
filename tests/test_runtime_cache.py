@@ -158,6 +158,8 @@ class RuntimeRefreshTests(unittest.TestCase):
         with patch('retrofetch.rendering.supports_animation', return_value=True):
             report = refresh_runtime(self.data, state_file=self.state)
         self.assertEqual(report['index']['entries'], 1)
+        self.assertEqual(report['index_v3']['entries'], 1)
+        self.assertTrue((self.data / 'selection.v3.idx').is_file())
         self.assertTrue(report['capabilities']['supported'])
         self.assertEqual(Path(report['index']['index']), self.data / 'selection.v2.idx')
         self.assertEqual(Path(report['capabilities']['state_file']), self.state)

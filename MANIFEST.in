@@ -11,3 +11,5 @@ prune .vscode
 prune recovery
 prune source-archives
 global-exclude *.gif *.iso *.idx *.sqlite3 *.pyc
+
+recursive-include native *.c

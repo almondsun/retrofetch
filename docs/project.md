@@ -59,6 +59,9 @@ optional later inspection; do not require manual approval of every imported GIF.
 ## Implementation direction
 
 - Python 3.11+ CLI, with standard-library configuration and catalog infrastructure.
+- Optional source-built C/OpenSSL frontend with verified v3 indexes and explicit
+  environment/geometry profiles; unsupported states delegate to Python. Native
+  activation is opt-in; Python-only wheels remain supported.
 - Combined mode delegates rendering and layout to Fastfetch:
 
   ```sh
@@ -79,17 +82,14 @@ optional later inspection; do not require manual approval of every imported GIF.
 
 ## Source acquisition and rights
 
-Installation should automatically obtain the dataset from the
-[Internet Archive collection](https://archive.org/details/animationfactoryessentialcollection).
-The approximately 1.6 GB ZIP contains all four discs' extracted contents and
-avoids ISO mounting/extraction. Existing local source material can be reused for
-development without another download.
-
-Local library expansion also uses the [250K_ANIMATIONS collection](https://archive.org/details/3DAnimatedClipart2AnimationFactory2008)
-and the [Anime Factory collection](https://archive.org/details/anime-factory-1).
-Their consolidated extracted files remain read-only inputs. Expanded imports
-preserve all three source identities and notices; this does not change automatic
-installation acquisition or authorize asset redistribution.
+Installation automatically obtains all three source collections: the
+[Essential Collection](https://archive.org/details/animationfactoryessentialcollection),
+[250K Animations](https://archive.org/details/3DAnimatedClipart2AnimationFactory2008),
+and [Anime Factory](https://archive.org/details/anime-factory-1). Acquisition,
+extraction and normalization happen explicitly upfront, not during startup.
+Existing local source material can be reused without another download. Preserve
+all three source identities and notices; acquisition does not authorize asset
+redistribution. See the installation guide for working-space and notice requirements.
 
 The source collection contains its own `readme.txt` and `use.html` restrictions.
 Archive availability is not evidence of a permissive license, and downloading at
@@ -103,7 +103,7 @@ Resolve applicable permissions before public asset distribution.
   ongoing playback, left/right/top placement, sizing, prompt position, scrolling,
   clearing, and preservation of existing scrollback.
 - Capability-check dependencies instead of assuming all distro packages match
-  locally inspected Fastfetch 2.69.0 and Kitty 0.49.2. Supported minimum versions
+  locally inspected Fastfetch 2.70.0 and Kitty 0.49.2. Supported minimum versions
   must follow tested capabilities; these observations are not minimum versions.
 - Test import grouping, real transparency, static detection, conversion fallback,
   deduplication aliases, corrupt input, and interrupted installation.

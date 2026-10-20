@@ -28,11 +28,15 @@ converts during terminal startup. Code installs into `~/.local`, assets into XDG
 data home. Ensure `~/.local/bin` is on your `PATH`.
 
 For a versioned code-only source archive without Git, see
-[installation](docs/installation.md) and the [v0.2.0 release notes](docs/releases/0.2.0.md).
+[installation](docs/installation.md) and the [v0.3.0 release notes](docs/releases/0.3.0.md).
 
 Already have the extracted collection? Use `sh install.sh --source /path/to/source`.
 See [installation and recovery](docs/installation.md) for directory overrides,
 safety checks, and opt-in Bash/Zsh/Fish startup examples.
+
+Optional source-built native acceleration avoids Python startup for supported
+playback. It remains opt-in and keeps Python fallback; see
+[native setup and refresh](docs/rendering.md#optional-v3native-acceleration).
 
 ## Use inside Kitty
 

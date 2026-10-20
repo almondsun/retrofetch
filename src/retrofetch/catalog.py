@@ -32,8 +32,8 @@ def _category_matches(category, pattern):
     return category == pattern or category.startswith(pattern + '/') or fnmatchcase(category, pattern)
 
 
-def _entry_from_row(row, root):
-    """Validate metadata without touching any animation filesystem paths."""
+def _validate_row(row):
+    """Validate plain metadata without constructing entries or filesystem paths."""
     if not isinstance(row, dict):
         raise ValueError('Catalog animation must be an object')
     for key in ('id', 'name', 'path', 'sha256'):
@@ -46,6 +46,12 @@ def _entry_from_row(row, root):
         raise ValueError('Animation sha256 must be 64 lowercase hexadecimal characters')
     if row['path'] != 'animations/' + row['sha256'] + '.gif':
         raise ValueError('Animation path must be animations/<sha256>.gif')
+    _strings(row.get('categories'), 'categories')
+    _strings(row.get('aliases'), 'aliases')
+
+
+def _entry_from_row(row, root):
+    _validate_row(row)
     return Entry(row['id'], row['name'], root / row['path'], row['width'], row['height'],
                  row['frames'], row['sha256'], _strings(row.get('categories'), 'categories'),
                  _strings(row.get('aliases'), 'aliases'))
@@ -78,6 +84,34 @@ def _validate_selected(entry):
     return entry
 
 
+def _filtered(items, include, exclude, field):
+    return [item for item in items
+            if (not include or any(_category_matches(c, p)
+                                   for c in field(item, 'categories') for p in include))
+            and not any(_category_matches(c, p)
+                        for c in field(item, 'categories') for p in exclude)]
+
+
+def _select(items, identifier, include, exclude, rng, field):
+    """Select metadata in catalog order, independently of its representation."""
+    eligible = _filtered(items, include, exclude, field)
+    if identifier is None:
+        if not eligible:
+            raise ValueError('No animations match the category filters')
+        return (rng if rng is not None else random).choice(eligible)
+    needle = identifier.casefold()
+    matches = [item for item in eligible if field(item, 'id').casefold() == needle]
+    if not matches:
+        matches = [item for item in eligible
+                   if any(needle == value.casefold() for value in field(item, 'aliases'))]
+    if not matches:
+        matches = [item for item in eligible if field(item, 'name').casefold() == needle]
+    if len(matches) != 1:
+        reason = 'Ambiguous animation' if matches else 'No matching animation'
+        raise ValueError(f'{reason}: {identifier}')
+    return matches[0]
+
+
 class Catalog:
     def __init__(self, entries):
         self.entries = list(entries)
@@ -92,9 +126,7 @@ class Catalog:
         return cls(_entries_from_document(document, root))
 
     def filtered(self, include=(), exclude=()):
-        return [entry for entry in self.entries
-                if (not include or any(_category_matches(c, p) for c in entry.categories for p in include))
-                and not any(_category_matches(c, p) for c in entry.categories for p in exclude)]
+        return _filtered(self.entries, include, exclude, getattr)
 
     def search(self, query, include=(), exclude=()):
         needle = query.casefold()
@@ -103,24 +135,7 @@ class Catalog:
                        for text in (entry.id, entry.name, *entry.aliases, *entry.categories))]
 
     def select(self, identifier=None, include=(), exclude=(), rng=None):
-        eligible = self.filtered(include, exclude)
-        if identifier is None:
-            if not eligible:
-                raise ValueError('No animations match the category filters')
-            selected = (rng if rng is not None else random).choice(eligible)
-        else:
-            needle = identifier.casefold()
-            matches = [entry for entry in eligible if entry.id.casefold() == needle]
-            if not matches:
-                matches = [entry for entry in eligible
-                           if any(needle == value.casefold() for value in entry.aliases)]
-            if not matches:
-                matches = [entry for entry in eligible if entry.name.casefold() == needle]
-            if len(matches) != 1:
-                reason = 'Ambiguous animation' if matches else 'No matching animation'
-                raise ValueError(f'{reason}: {identifier}')
-            selected = matches[0]
-        return _validate_selected(selected)
+        return _validate_selected(_select(self.entries, identifier, include, exclude, rng, getattr))
 
     def categories(self):
         return sorted({category for entry in self.entries for category in entry.categories})

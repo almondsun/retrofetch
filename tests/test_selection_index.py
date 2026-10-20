@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from retrofetch.catalog import Catalog
-from retrofetch.selection_index import INDEX_NAME, build_index, select_random
+from retrofetch.selection_index import INDEX_NAME, build_index, select_random, select_indexed
 
 
 class SelectionIndexTests(unittest.TestCase):
@@ -63,6 +63,72 @@ class SelectionIndexTests(unittest.TestCase):
                 + struct.pack('<' + 'Q' * len(positions), *(positions if offsets is None else offsets))
                 + b''.join(records))
         self.index.write_bytes(body + hashlib.sha256(body).digest())
+
+    def test_named_filtered_parity_and_semantic_errors(self):
+        self.rows[0]['aliases'] = [self.rows[1]['id']]
+        self.rows[1]['categories'] = ['space']
+        self.rows[2]['name'] = self.rows[3]['name'] = 'Shared'
+        self.catalog.write_text(json.dumps(dict(version=1, animations=self.rows)))
+        build_index(self.root)
+        catalog = Catalog.load(self.root)
+        for identifier, include, exclude in [
+                (None, ['animals'], []), ('CAT0', [], []),
+                (self.rows[1]['id'], [], []),
+                (self.rows[1]['id'], ['animals'], []),
+                ('Shared', [], []), ('missing', [], []), (None, ['none'], [])]:
+            for seed in range(5):
+                arguments = dict(identifier=identifier, include=include, exclude=exclude)
+                try:
+                    expected = catalog.select(**arguments, rng=random.Random(seed))
+                except ValueError as error:
+                    with self.assertRaises(ValueError) as caught:
+                        select_indexed(self.root, **arguments, rng=random.Random(seed))
+                    self.assertEqual(str(caught.exception), str(error))
+                else:
+                    self.assertEqual(select_indexed(self.root, **arguments,
+                                                   rng=random.Random(seed)), expected)
+
+    def test_named_bulk_decode_and_only_selected_entry_construction(self):
+        build_index(self.root)
+        from retrofetch.catalog import _entry_from_row
+        with patch('retrofetch.selection_index.json.loads', wraps=json.loads) as loads, \
+             patch('retrofetch.selection_index._entry_from_row', wraps=_entry_from_row) as entries:
+            self.assertEqual(select_indexed(self.root, 'cat3').id, self.rows[3]['id'])
+        self.assertEqual(loads.call_count, 1)
+        self.assertEqual(entries.call_count, 1)
+
+    def test_invalid_unselected_metadata_falls_back(self):
+        for change in ({'aliases': [False]}, {'categories': 'animals'}, {'width': True},
+                       {'path': '../escape.gif'}, {'sha256': 'bad'}, {'id': ''}):
+            rows = [dict(row) for row in self.rows]
+            rows[-1].update(change)
+            self.rewrite_binary(rows=rows)
+            self.assertIsNone(select_indexed(self.root, 'cat0'), change)
+        rows = [dict(row) for row in self.rows]
+        rows[-1]['id'] = rows[0]['id'].upper()
+        self.rewrite_binary(rows=rows)
+        self.assertIsNone(select_indexed(self.root, 'cat0'))
+
+    def test_named_integrity_and_selected_paths_fall_back_without_writes(self):
+        build_index(self.root)
+        original = self.catalog.read_bytes()
+        self.catalog.write_bytes(original.replace(b'Cat 0', b'Bat 0'))
+        self.assertIsNone(select_indexed(self.root, 'cat0'))
+        self.catalog.write_bytes(original)
+        selected = self.root / self.rows[0]['path']
+        selected.unlink()
+        self.assertIsNone(select_indexed(self.root, 'cat0'))
+        selected.symlink_to('/etc/passwd')
+        before = self.index.read_bytes(), self.catalog.read_bytes()
+        self.assertIsNone(select_indexed(self.root, 'cat0'))
+        self.assertEqual(before, (self.index.read_bytes(), self.catalog.read_bytes()))
+        # Unselected missing or unsafe files do not prevent a valid selection.
+        self.assertEqual(select_indexed(self.root, 'cat1').id, self.rows[1]['id'])
+
+    def test_named_and_filtered_do_not_use_legacy(self):
+        self.legacy_index()
+        self.assertIsNone(select_indexed(self.root, 'cat0'))
+        self.assertIsNone(select_indexed(self.root, include=['animals']))
 
     def test_binary_build_is_deterministic_and_preserves_legacy(self):
         legacy = self.legacy_index()
