@@ -72,6 +72,27 @@ class NativeTests(unittest.TestCase):
             if slave is not None:
                 os.close(slave)
 
+    def index(self, keys=None):
+        root = self.home / 'data'
+        root.mkdir()
+        (root / 'animations').mkdir()
+        digest = hashlib.sha256(self.gif.read_bytes()).digest()
+        catalog = json.dumps({'version': 1, 'animations': [{
+            'id': 'art', 'name': 'Art', 'path': 'animations/' + digest.hex() + '.gif',
+            'width': 160, 'height': 160, 'frames': 2, 'sha256': digest.hex(),
+            'categories': ['retro'], 'aliases': []}]}).encode()
+        (root / 'catalog.json').write_bytes(catalog)
+        (root / 'animations' / (digest.hex() + '.gif')).write_bytes(self.gif.read_bytes())
+        metadata = json.dumps({'category_names': [], 'rows': [['art', 'Art', [], []]]}).encode()
+        keybytes = b''
+        for key, role, ordinal in keys or [('art', 0, 0)]:
+            encoded = key.encode()
+            keybytes += struct.pack('<I', len(encoded)) + encoded + struct.pack('<BI', role, ordinal)
+        body = struct.pack('<8sII32sQQQ', b'RTFXIDX3', 3, 1, hashlib.sha256(catalog).digest(), 44, len(metadata), len(keybytes))
+        body += struct.pack('<32sIII', digest, 160, 160, 2) + metadata + keybytes
+        (root / 'selection.v3.idx').write_bytes(body + hashlib.sha256(body).digest())
+        return root
+
     def test_unknown_options_preserve_exact_argv(self):
         args = ['--animation-only', '--unknown', 'a b', '--size=2x3']
         result = self.run_native(args)
@@ -89,6 +110,57 @@ class NativeTests(unittest.TestCase):
         result = self.run_native(['--startup'])
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
 
+    def test_named_index_and_duplicate_same_entry(self):
+        root = self.index([('art', 1, 0), ('art', 1, 0)])
+        result = self.run_native(['--animation-only', '--data-dir', str(root), 'ART'], tty=True)
+        self.assertIn('KITTEN:', result.stdout)
+        self.assertNotIn('FALLBACK:', result.stdout)
+
+    def test_random_index(self):
+        root = self.index()
+        self.assertIn('KITTEN:', self.run_native(['--animation-only', '--data-dir', str(root)], tty=True).stdout)
+
+    def test_damaged_index_falls_back_without_render(self):
+        root = self.index()
+        path = root / 'selection.v3.idx'
+        original = path.read_bytes()
+        for malformed in [b'', original[:-1], original[:100], original[:-32] + bytes(32)]:
+            path.write_bytes(malformed)
+            result = self.run_native(['--animation-only', '--data-dir', str(root)], tty=True)
+            self.assertIn('FALLBACK:', result.stdout)
+            self.assertNotIn('KITTEN:', result.stdout)
+
+    def test_catalog_change_and_bad_key_ordinal_fall_back(self):
+        root = self.index([('art', 0, 1)])
+        result = self.run_native(['--animation-only', '--data-dir', str(root)], tty=True)
+        self.assertIn('FALLBACK:', result.stdout)
+        (root / 'catalog.json').write_bytes(b'changed')
+        self.assertIn('FALLBACK:', self.run_native(['--animation-only', '--data-dir', str(root)], tty=True).stdout)
+
+    def test_resigned_malformed_index_boundaries(self):
+        root = self.index()
+        path = root / 'selection.v3.idx'
+        original = path.read_bytes()
+        changes = [(8, struct.pack('<I', 99)), (12, struct.pack('<I', 1000001)),
+                   (48, struct.pack('<Q', 2**64 - 1)), (56, struct.pack('<Q', 2**64 - 1)),
+                   (64, struct.pack('<Q', 2**64 - 1)), (104, struct.pack('<I', 0)),
+                   (108, struct.pack('<I', 0)), (112, struct.pack('<I', 1))]
+        for offset, replacement in changes:
+            body = bytearray(original[:-32])
+            body[offset:offset + len(replacement)] = replacement
+            path.write_bytes(body + hashlib.sha256(body).digest())
+            result = self.run_native(['--animation-only', '--data-dir', str(root)], tty=True)
+            self.assertIn('FALLBACK:', result.stdout)
+            self.assertNotIn('KITTEN:', result.stdout)
+        rng = random.Random(431)
+        for _ in range(32):
+            body = bytes(rng.randrange(256) for _ in range(rng.randrange(1, 512)))
+            path.write_bytes(body + hashlib.sha256(body).digest())
+            result = self.run_native(['--animation-only', '--data-dir', str(root)], tty=True)
+            self.assertIn('FALLBACK:', result.stdout)
+            self.assertNotIn('AddressSanitizer', result.stderr)
+            self.assertNotIn('runtime error:', result.stderr)
+
     def test_animation_helper_missing_is_failure_not_success(self):
         (self.helpers / 'kitten').unlink()
         self.env['PATH'] = str(self.helpers)
@@ -102,6 +174,13 @@ class NativeTests(unittest.TestCase):
         config.parent.mkdir(parents=True)
         config.write_text('size="1x1"')
         self.assertIn('FALLBACK:', self.run_native(['--animation-only', '--file', str(self.gif)], tty=True).stdout)
+
+    def test_symlink_asset_falls_back(self):
+        root = self.index()
+        asset = next((root / 'animations').iterdir())
+        asset.unlink()
+        asset.symlink_to(self.gif)
+        self.assertIn('FALLBACK:', self.run_native(['--animation-only', '--data-dir', str(root)], tty=True).stdout)
 
 
 if __name__ == '__main__':
