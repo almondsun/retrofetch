@@ -116,3 +116,39 @@ Repeat these checks when changing the rendering boundary.
 Independent scratch-PTY probes confirmed both installed native helpers upload
 animation packets and return, without emitting screen/scrollback-clear sequences.
 Those protocol checks do not replace the visual checklist above.
+
+## Selection responsiveness
+
+Playback uses the existing v2 selection index for random, named, and
+category-filtered choices. Named and filtered lookups decode metadata together
+and construct only the selected animation entry. Discovery commands still use
+the canonical catalog. Missing or invalid indexes fall back to that catalog;
+startup never builds an index. Existing libraries need no format migration.
+
+Every indexed invocation still verifies the full index checksum and catalog
+content binding. These checks do not verify GIF payload hashes; use `--validate`
+for full prepared-library validation. Rendering, animation timing, and library
+coverage are unchanged. CLI dependencies load only when their command needs them.
+
+Measure fresh processes against the same library, fixed animation and filters;
+report median and p95 separately for random, named, filtered and explicit-file
+controls. Warm filesystem measurements are not cold-cache results, and captured
+protocol timing is not visible-first-frame latency. Capture all graphics during
+benchmarks rather than sending protocol probes to an interactive terminal.
+
+A local Python 3.15.0 comparison on the 36,642-entry library used 30 fresh
+processes per version/mode, interleaved with warm filesystem caches. Rendering
+was stubbed after selection and input validation; these are not end-to-end
+animation or visible-first-frame timings. Median/p95 milliseconds:
+
+| Mode | Baseline | Optimized |
+| --- | --- | --- |
+| CLI import | 65.3 / 71.4 | 40.5 / 47.4 |
+| Random | 128.6 / 136.7 | 128.8 / 136.5 |
+| Named | 422.1 / 433.2 | 334.8 / 345.1 |
+| Filtered random | 436.0 / 453.3 | 348.7 / 361.4 |
+| Filtered named | 433.3 / 443.6 | 348.4 / 359.6 |
+| Explicit file | 46.8 / 57.7 | 41.8 / 51.8 |
+
+Named and filtered launches improved about 20%, below the planned 30% target.
+These results demonstrate a partial improvement, not completion of that target.
