@@ -44,6 +44,8 @@ def prepare_library(source, data_dir, *, progress=None, legacy_catalog=None):
     report = prepare(source, data_dir, progress=progress, legacy_catalog=legacy_catalog)
     report['normalization'] = normalize_library(data_dir, progress=progress)
     build_index(data_dir)
+    from .selection_v3 import build_index_v3
+    build_index_v3(data_dir)
     report['validation'] = validate_library(data_dir)
     return report
 
@@ -109,17 +111,25 @@ def _validate_targets(prefix):
     for target in (prefix, prefix / "bin", prefix / "lib", launcher, package):
         if target.is_symlink():
             raise InstallationError("installation targets must not be symlinks")
-    if launcher.exists() and (not launcher.is_file() or MANAGED not in launcher.read_text(errors="replace").splitlines()[:3]):
-        raise InstallationError("refusing to overwrite an unmanaged retrofetch launcher")
     marker = package / PACKAGE_MARKER
     if package.exists() and (not package.is_dir() or marker.is_symlink() or not marker.is_file()):
         raise InstallationError("refusing to replace an unmanaged package directory")
+    ownership = None
     if marker.is_file():
         try:
-            if json.loads(marker.read_text()) != {"managed_by": "retrofetch", "version": 1}:
-                raise ValueError("unknown ownership marker")
+            ownership = json.loads(marker.read_text())
+            if ownership != {"managed_by": "retrofetch", "version": 1}:
+                from .native_install import native_owned
+                if not native_owned(prefix, ownership):
+                    raise ValueError("unknown ownership marker")
         except (OSError, ValueError, TypeError) as error:
             raise InstallationError("unrecognized package ownership marker") from error
+    if launcher.exists():
+        from .native_install import native_owned
+        python_owned = (launcher.is_file() and MANAGED in
+                        launcher.read_text(errors="replace").splitlines()[:3])
+        if not python_owned and not native_owned(prefix, ownership):
+            raise InstallationError("refusing to overwrite an unmanaged retrofetch launcher")
     return launcher, package
 
 

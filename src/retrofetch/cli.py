@@ -68,6 +68,7 @@ def main(argv=None):
     modes.add_argument("--prepare", type=Path, metavar="SOURCE", help="prepare the full library upfront from an extracted collection")
     modes.add_argument("--validate", action="store_true", help="verify prepared catalog file hashes and GIF metadata")
     modes.add_argument("--normalize", action="store_true", help="normalize prepared animations upfront and rebuild their selection index")
+    modes.add_argument("--refresh-native", action="store_true", help="prepare an optional native profile for the current terminal after explicit runtime refresh")
     modes.add_argument("--refresh-runtime", action="store_true", help="rebuild the selection index and refresh Fastfetch capability metadata without converting assets")
     parser.add_argument("--layout-mode", choices=("fixed-height", "width-sensitive"), help="calibration contract: fixed-height reuses rows across tiling/font changes; default: width-sensitive")
     modes.add_argument("--calibrate-layout", action="store_true", help="measure Fastfetch layout once for centered native logos; rerun after layout changes")
@@ -75,7 +76,7 @@ def main(argv=None):
     if args.animation_only and args.fastfetch_config:
         parser.error("--fastfetch-config cannot be used with --animation-only")
     discovery = args.list or args.search is not None or args.categories
-    maintenance = args.prepare is not None or args.validate or args.normalize or args.refresh_runtime
+    maintenance = args.prepare is not None or args.validate or args.normalize or args.refresh_runtime or args.refresh_native
     if args.layout_mode and not args.calibrate_layout:
         parser.error("--layout-mode requires --calibrate-layout")
     if args.file and args.animation:
@@ -94,6 +95,10 @@ def main(argv=None):
     if maintenance:
         import json
         try:
+            if args.refresh_native:
+                from .native_profile import build_profile
+                print(json.dumps(build_profile(directory), sort_keys=True))
+                return 0
             if args.refresh_runtime:
                 from .runtime_cache import refresh_runtime
                 report = refresh_runtime(directory)
@@ -112,6 +117,8 @@ def main(argv=None):
                 else:
                     report = normalize_library(directory, progress=progress)
                 build_index(directory)
+                from .selection_v3 import build_index_v3
+                build_index_v3(directory)
                 from .runtime_cache import refresh_capabilities
                 refresh_capabilities()
                 print(json.dumps({key: value for key, value in report.items()
