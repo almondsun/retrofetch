@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Smoke-test trusted release artifacts offline in a disposable installation."""
+"""Smoke-test trusted release artifacts offline in a disposable installation.
+
+Failed or timed-out child commands print their captured diagnostics to stderr.
+"""
 import argparse
 import base64
 import hashlib
@@ -8,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import venv
@@ -16,8 +20,16 @@ from check_distribution import check
 
 
 def run(arguments, *, cwd, env):
-    return subprocess.run([str(arg) for arg in arguments], cwd=cwd, env=env,
-                          check=True, capture_output=True, text=True, timeout=120)
+    try:
+        return subprocess.run([str(arg) for arg in arguments], cwd=cwd, env=env,
+                              check=True, capture_output=True, text=True, timeout=120)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        # TimeoutExpired can retain bytes even when text=True was requested.
+        for output in (error.stdout, error.stderr):
+            if output:
+                sys.stderr.write(output.decode('utf-8', errors='replace')
+                                 if isinstance(output, bytes) else output)
+        raise
 
 
 def main():
