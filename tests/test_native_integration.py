@@ -30,7 +30,8 @@ class NativeInstallTests(unittest.TestCase):
 
     def test_install_native_pair_is_owned_and_repeatable(self):
         from retrofetch.native_install import install_native
-        original = self.launcher.read_bytes()
+        from retrofetch.python_launcher import launcher_text
+        original = launcher_text(self.package).encode()
         install_native(self.prefix, self.frontend)
         self.assertEqual(self.launcher.read_bytes(), self.frontend.read_bytes())
         self.assertEqual((self.prefix / 'bin/retrofetch-python').read_bytes(), original)
@@ -45,8 +46,31 @@ class NativeInstallTests(unittest.TestCase):
         self.launcher.write_text(updated)
         (self.package / installer.PACKAGE_MARKER).write_text(json.dumps({'managed_by':'retrofetch','version':1}))
         install_native(self.prefix, self.frontend)
-        self.assertEqual((self.prefix / 'bin/retrofetch-python').read_text(), updated)
+        from retrofetch.python_launcher import launcher_text
+        self.assertEqual((self.prefix / 'bin/retrofetch-python').read_text(), launcher_text(self.package))
         installer._validate_targets(self.prefix)
+
+    def test_reactivation_regenerates_companion_and_marker_for_selected_entry(self):
+        import hashlib
+        import sys
+        from retrofetch.native_install import install_native
+        install_native(self.prefix, self.frontend)
+        companion = self.prefix / 'bin/retrofetch-python'
+        before = companion.read_bytes()
+        entry = self.root / 'stable-python'
+        entry.symlink_to(sys.executable)
+        with patch('retrofetch.python_launcher.sys.executable', str(entry)):
+            install_native(self.prefix, self.frontend)
+        self.assertNotEqual(companion.read_bytes(), before)
+        self.assertEqual(companion.read_text().splitlines()[0], '#!' + str(entry))
+        marker = json.loads((self.package / installer.PACKAGE_MARKER).read_bytes())
+        self.assertEqual(marker['python_sha256'], hashlib.sha256(companion.read_bytes()).hexdigest())
+        installer._validate_targets(self.prefix)
+        before = self.snapshot()
+        with patch('retrofetch.python_launcher.sys.executable', 'python3'):
+            with self.assertRaises(ValueError):
+                install_native(self.prefix, self.frontend)
+        self.assertEqual(self.snapshot(), before)
 
     def test_unmanaged_companion_rejected_without_change(self):
         from retrofetch.native_install import install_native
