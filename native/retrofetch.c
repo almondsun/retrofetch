@@ -366,20 +366,45 @@ static int current_fastfetch(char resolved[PATH_MAX]) {
     }
     free(copy); return found;
 }
+struct layout_candidate { uint32_t mode, rows, columns; };
+static struct layout_candidate layouts[64];
+static uint32_t layout_count=0, layout_position=0, layout_horizontal=0;
+static int profile_v2=0, v2_present=0;
+static int layout_padding(int columns,int display_width,int display_height) {
+    uint32_t position=layout_position;
+    if(position==3) position=columns-display_width-(int)layout_horizontal>=32?0:2;
+    if(position==2) return -1;
+    int information=columns-display_width-(int)layout_horizontal;
+    if(information<1) information=1;
+    for(uint32_t i=0;i<layout_count;i++) {
+        if(layouts[i].mode==1 && layouts[i].columns!=(uint32_t)information) continue;
+        int delta=(int)layouts[i].rows-display_height;
+        return delta>0?delta/2:0;
+    }
+    return -1;
+}
 static int profile(const char *root,int columns,int rows,double cw,double ch,int *supported,int *padding) {
     char path[PATH_MAX]; size_t n=0;
-    if(!join(path,root,"native-runtime.v1.bin")) return 0;
+    if(!join(path,root,"native-runtime.v2.bin")) return 0;
+    struct stat present;
+    int v2=lstat(path,&present)==0 || errno!=ENOENT;
+    v2_present=v2;
+    if(!v2 && !join(path,root,"native-runtime.v1.bin")) return 0;
     unsigned char *b=read_file(path,&n,MAX_BYTES,1), digest[32];
     if(!b) return 0;
     int ok=0; size_t pos=56;
-    if(n<88 || memcmp(b,"RTFXNAT1",8) || u32(b+8)!=1 || !sha(b,n-32,digest) || memcmp(digest,b+n-32,32)) goto end;
+    if(n<88 || memcmp(b,v2?"RTFXNAT2":"RTFXNAT1",8) || u32(b+8)!=(v2?2u:1u)
+            || !sha(b,n-32,digest) || memcmp(digest,b+n-32,32)) goto end;
     uint32_t envs=u32(b+12), deps=u32(b+16), count=u32(b+20);
-    if(envs>4096 || deps>128 || !count || count>1000000 || u32(b+24)!=(uint32_t)columns || u32(b+28)!=(uint32_t)rows) goto end;
+    if(envs>4096 || deps>128 || !count || count>1000000) goto end;
+    if(v2) {
+        if(u32(b+24)>64 || u32(b+28)>3 || u64(b+32) || u64(b+40) || u32(b+52)>20000) goto end;
+    } else if(u32(b+24)!=(uint32_t)columns || u32(b+28)!=(uint32_t)rows) goto end;
     uint64_t bits=u64(b+32); double expected_cw, expected_ch;
     memcpy(&expected_cw,&bits,8); bits=u64(b+40); memcpy(&expected_ch,&bits,8);
-    if(expected_cw!=cw || expected_ch!=ch || u32(b+48)>1) goto end;
+    if((!v2 && (expected_cw!=cw || expected_ch!=ch)) || u32(b+48)>1) goto end;
     uint32_t pad=u32(b+52);
-    if(pad!=UINT32_MAX && pad>10000) goto end;
+    if(!v2 && pad!=UINT32_MAX && pad>10000) goto end;
     size_t actual_envs=0;
     for(size_t i=0;environment_keys[i];i++) if(getenv(environment_keys[i])) actual_envs++;
     if(actual_envs!=envs) goto end;
@@ -424,12 +449,25 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
     }
     if(u32(b+48) && !bound_executable) goto end;
     if(resolved_executable) strcpy(verified_executable,executable);
+    if(v2) {
+        uint32_t candidates=u32(b+24);
+        if((uint64_t)candidates*12>n-32-pos) goto end;
+        for(uint32_t i=0;i<candidates;i++) {
+            uint32_t mode=u32(b+pos), reference=u32(b+pos+4), information=u32(b+pos+8);
+            if(mode>1 || !reference || reference>10000
+                    || (mode==0 && information) || (mode==1 && (!information || information>65535))) goto end;
+            layouts[i]=(struct layout_candidate){mode,reference,information}; pos+=12;
+        }
+    }
     if((uint64_t)count*4!=n-32-pos) goto end;
     for(uint32_t i=0;i<count;i++) if(u32(b+pos+4*(size_t)i)>=1000000 || (i && u32(b+pos+4*(size_t)(i-1))>=u32(b+pos+4*(size_t)i))) goto end;
     eligible_bytes=malloc((size_t)count*4);
     if(!eligible_bytes) goto end;
     memcpy(eligible_bytes,b+pos,(size_t)count*4); eligible_count=count;
-    *supported=(int)u32(b+48); *padding=pad==UINT32_MAX?-1:(int)pad; ok=1;
+    if(v2) {
+        profile_v2=1; layout_count=u32(b+24); layout_position=u32(b+28); layout_horizontal=pad;
+    }
+    *supported=(int)u32(b+48); *padding=v2 || pad==UINT32_MAX?-1:(int)pad; ok=1;
 end:
     free(b); return ok;
 }
@@ -492,7 +530,10 @@ int main(int argc,char **argv) {
     int supported=0,padding=-1,has_profile=0;
     if(realpath(data,root) && join(verified_index,root,"selection.v3.idx"))
         has_profile=profile(root,columns,rows,cw,ch,&supported,&padding);
-    if(!has_profile) verification_clear();
+    if(!has_profile) {
+        verification_clear();
+        if(v2_present) return fallback(argv);
+    }
     if(config_exists() && !has_profile) return fallback(argv);
     if(!animation && (!has_profile || !supported || custom_size)) return fallback(argv);
     char path[PATH_MAX]; uint32_t expected_w=0,expected_h=0;
@@ -535,6 +576,12 @@ int main(int argc,char **argv) {
     }
     double pixels=display_width?display_width*cw:fmin(width,bh*ch*width/height);
     if(fmin(pixels,pixels*height/width)<1) return fallback(argv);
+    if(profile_v2) {
+        double visible_height=ceil(pixels*height/width/ch);
+        if(!isfinite(visible_height) || visible_height>INT_MAX) return fallback(argv);
+        int display_height=visible_height<1?1:(int)visible_height;
+        padding=layout_padding(columns,display_width,display_height);
+    }
     char dw[32],dh[32],pad[32];
     snprintf(dw,sizeof dw,"%d",display_width);
     snprintf(dh,sizeof dh,"%d",!display_width && height>bh*ch?bh:0);

@@ -60,7 +60,7 @@ optional later inspection; do not require manual approval of every imported GIF.
 
 - Python 3.11+ CLI, with standard-library configuration and catalog infrastructure.
 - Optional source-built C/OpenSSL frontend with verified v3 indexes and explicit
-  environment/geometry profiles; unsupported states delegate to Python. Native
+  environment/dependency profiles with resize-aware layout contracts; unsupported states delegate to Python. Native
   activation is opt-in; Python-only wheels remain supported.
 - Combined mode delegates rendering and layout to Fastfetch:
 
