@@ -2,6 +2,7 @@
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -49,6 +50,17 @@ static ssize_t changing_read(int fd, void *buf, size_t count) {
 #undef malloc
 #undef read
 int main(int argc, char **argv) {
+    if (getenv("REUSE_SNAPSHOT")) {
+        struct verified_file *first=verified_dependency(argv[1],0);
+        struct verified_file *second=verified_dependency(argv[1],0);
+        int ok=first && first==second && verification_valid();
+        verification_clear(); return ok?0:3;
+    }
+    if (getenv("STALE_SNAPSHOT")) {
+        if (!verified_dependency(argv[1],0)) return 3;
+        int out=open(argv[1],O_WRONLY); pwrite(out,"changed!",8,0); close(out);
+        int stale=!verification_valid(); verification_clear(); return stale?0:3;
+    }
     unsigned char digest[32];
     if (argc != 2 || !file_digest(argv[1], digest)) return 2;
     for (int i=0; i<32; i++) printf("%02x", digest[i]);
@@ -98,3 +110,9 @@ int main(int argc, char **argv) {
         self.path.unlink()
         os.mkfifo(self.path)
         self.assertEqual(self.run_probe().returncode, 2)
+
+    def test_snapshot_is_reused_within_invocation(self):
+        self.assertEqual(self.run_probe(REUSE_SNAPSHOT='1').returncode, 0)
+
+    def test_reused_snapshot_is_rechecked_before_rendering(self):
+        self.assertEqual(self.run_probe(STALE_SNAPSHOT='1').returncode, 0)

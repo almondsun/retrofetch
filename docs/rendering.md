@@ -265,3 +265,9 @@ than allocating the complete catalog. File size, regular-file status and content
 remain verified; descriptor and pathname identities must stay unchanged during
 reading. Legitimate dependency symlinks remain supported. This reduces temporary
 memory, not the memory Kitty uses to display an animation.
+
+Within one invocation, profile and selection validation share verified catalog
+and index snapshots. Full dependency digests, the index's separate internal
+checksum, catalog binding, and all record/key checks remain mandatory. Open
+snapshots are identity-checked before rendering and then released; there is no
+persistent verification process or timestamp-only content cache.
