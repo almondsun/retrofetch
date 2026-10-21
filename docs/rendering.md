@@ -270,17 +270,30 @@ memory, not the memory Kitty uses to display an animation.
 
 ### Resize-aware native profiles
 
-Explicit `retrofetch --refresh-native` now writes `native-runtime.v2.bin`.
+Explicit `retrofetch --refresh-native` now writes `native-runtime.v3.bin`.
 It preserves compatible calibration history and computes placement for the
 current window and cell dimensions. Fixed-height contracts survive resizing;
 width-sensitive contracts apply only at their calibrated information width.
 Missing compatible layout retains native placement and the existing diagnostic.
 No configuration or calibration is measured or written during startup.
 
-The frontend prefers v2; only an absent v2 permits the legacy v1 reader, which
-still requires its original geometry. A present invalid v2 delegates to Python.
-Refreshing leaves v1 intact for older binaries and rollback. Unsupported custom
-settings and changed dependencies still delegate safely.
+The frontend prefers v3; only an absent v3 permits the legacy v2/v1 readers.
+A present invalid successor delegates to Python without downgrading. Refreshing
+leaves old profiles intact for rollback. Version 3 binds logical/canonical paths,
+file lengths and complete SHA-256 digests, not persistent device/inode/timestamps.
+It permits PATH changes only when the first current Fastfetch executable remains
+the same canonical, content-bound renderer. Other environment guards remain.
+Unsupported custom settings and changed dependencies still delegate safely.
+
+Capability refresh writes runtime state v2; explicit calibration writes layout
+state v3 using content-bound Fastfetch identity. Legacy readers remain supported.
+Upgrade maintenance may call `retrofetch.calibration.migrate_layout_state()` only
+when legacy executable/configuration/environment identities still match; otherwise
+run `retrofetch --calibrate-layout --layout-mode <previous-mode>` explicitly.
+Migration preserves a `.v2.bak`; stale state is never promoted during startup.
+Managed Python launchers retain the selected absolute Python 3.11+ interpreter
+entry, including a stable symlink, rather than resolving Python through PATH.
+Repair the managed installation if that interpreter entry is removed.
 
 Within one invocation, profile and selection validation share verified catalog
 and index snapshots. Full dependency digests, the index's separate internal
