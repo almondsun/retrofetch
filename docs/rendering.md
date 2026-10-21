@@ -300,3 +300,20 @@ and index snapshots. Full dependency digests, the index's separate internal
 checksum, catalog binding, and all record/key checks remain mandatory. Open
 snapshots are identity-checked before rendering and then released; there is no
 persistent verification process or timestamp-only content cache.
+
+
+### Optional Omarchy launch integration
+
+Desktop sharing is user-local and is not enabled by the installer. A user
+`kitty.desktop` override may retain the system desktop fields and add
+`--single-instance --instance-group=omarchy-retrofetch` to its `Exec` line. This
+keeps Omarchy's normal launcher and working-directory discovery. Windows share
+Kitty's renderer/helpers (and its process-failure boundary); no hidden server or
+waiting client is needed. Existing unshared windows need not be restarted.
+
+On Lua-based Omarchy, a user `o.window("kitty", { no_anim = true })` rule removes
+compositor motion for Kitty only; it does not change GIF playback. Validate with
+`hyprctl reload` and `hyprctl configerrors`. Keep the vendor Mise activation and
+remove a duplicate personal activation only when one is actually present.
+Back up user files and the complete managed installation/state before activation;
+restore the native/Python pair, ownership marker, package and state together.
