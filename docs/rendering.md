@@ -257,3 +257,11 @@ left/right/top layouts, animation-only playback, motion after frontend exit,
 interactive prompt placement, scrolling, clearing, and intentional custom-size
 Python fallback. Native execution was independently confirmed without a Python
 fallback. Repeat affected visual checks when changing the rendering boundary.
+
+### Bounded native verification memory
+
+The native frontend streams dependency SHA-256 through a 64 KiB buffer rather
+than allocating the complete catalog. File size, regular-file status and content
+remain verified; descriptor and pathname identities must stay unchanged during
+reading. Legitimate dependency symlinks remain supported. This reduces temporary
+memory, not the memory Kitty uses to display an animation.

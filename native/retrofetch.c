@@ -29,6 +29,17 @@ static int safe_path(const char *p) {
     char resolved[PATH_MAX];
     return p[0]=='/' && realpath(p,resolved) && strcmp(p,resolved)==0;
 }
+static int same_identity(const struct stat *a,const struct stat *b) {
+    return a->st_dev==b->st_dev && a->st_ino==b->st_ino && a->st_size==b->st_size
+        && a->st_mtim.tv_sec==b->st_mtim.tv_sec && a->st_mtim.tv_nsec==b->st_mtim.tv_nsec
+        && a->st_ctim.tv_sec==b->st_ctim.tv_sec && a->st_ctim.tv_nsec==b->st_ctim.tv_nsec
+        && S_ISREG(b->st_mode);
+}
+static int stable_file(int fd,const char *path,const struct stat *before) {
+    struct stat after,named;
+    return !fstat(fd,&after) && !stat(path,&named)
+        && same_identity(before,&after) && same_identity(before,&named);
+}
 static unsigned char *read_file(const char *path, size_t *length, size_t limit, int nofollow) {
     int fd=open(path,O_RDONLY|O_NONBLOCK|(nofollow?O_NOFOLLOW:0));
     struct stat st;
@@ -45,14 +56,37 @@ static unsigned char *read_file(const char *path, size_t *length, size_t limit, 
     }
     unsigned char extra;
     ssize_t tail=read(fd,&extra,1);
+    int stable=stable_file(fd,path,&st);
     close(fd);
-    if(tail!=0) { free(data); return NULL; }
+    if(tail!=0 || !stable) { free(data); return NULL; }
     data[n]=0; *length=n; return data;
 }
 static int file_digest(const char *path,unsigned char out[32]) {
-    size_t n=0; unsigned char *data=read_file(path,&n,MAX_BYTES,0);
-    if(!data) return 0;
-    int ok=sha(data,n,out); free(data); return ok;
+    int fd=open(path,O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+    struct stat before;
+    if(fd<0) return 0;
+    if(fstat(fd,&before) || !S_ISREG(before.st_mode) || before.st_size<0
+            || (uint64_t)before.st_size>MAX_BYTES) { close(fd); return 0; }
+    EVP_MD_CTX *context=EVP_MD_CTX_new();
+    int ok=0;
+    if(!context || EVP_DigestInit_ex(context,EVP_sha256(),NULL)!=1) goto end;
+    unsigned char buffer[65536];
+    size_t remaining=(size_t)before.st_size;
+    while(remaining) {
+        size_t count=remaining<sizeof buffer?remaining:sizeof buffer;
+        ssize_t got=read(fd,buffer,count);
+        if(got<0 && errno==EINTR) continue;
+        if(got<=0 || EVP_DigestUpdate(context,buffer,(size_t)got)!=1) goto end;
+        remaining-=(size_t)got;
+    }
+    ssize_t tail;
+    do { tail=read(fd,buffer,1); } while(tail<0 && errno==EINTR);
+    unsigned int length=0;
+    if(tail || !stable_file(fd,path,&before)
+            || EVP_DigestFinal_ex(context,out,&length)!=1 || length!=32) goto end;
+    ok=1;
+end:
+    EVP_MD_CTX_free(context); close(fd); return ok;
 }
 static int join(char out[PATH_MAX],const char *base,const char *tail) {
     int n=snprintf(out,PATH_MAX,"%s/%s",base,tail);
