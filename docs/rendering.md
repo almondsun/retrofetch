@@ -202,11 +202,12 @@ retrofetch --refresh-runtime
 retrofetch --refresh-native
 ```
 
-The v2 profile binds prepared category eligibility, relevant environment,
+The current v3 profile binds prepared category eligibility, relevant environment,
 capability/calibration contracts, and dependency content/identity. Placement is
 calculated from current terminal geometry; compatible resizing stays native.
 Changed settings, unsupported options or stale dependencies cause silent
-delegation to the Python entrypoint before output. Legacy v1 profiles still
+delegation to the Python entrypoint before output. Legacy v2 profiles remain
+readable, and legacy v1 profiles still
 require their original geometry. Combined native mode
 currently supports default sizing and prepared 160x160 canvases; ad-hoc filters,
 custom sizing/configuration and non-ASCII query folding remain Python paths.

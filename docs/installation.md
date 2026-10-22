@@ -118,8 +118,12 @@ installing the managed Python package. Its explicit activation command sets
 Run `retrofetch --refresh-runtime` to prepare v2/v3 indexes and capabilities,
 then `retrofetch --refresh-native` in the target Kitty terminal. Neither command
 reimports or converts animation assets. Native profiles bind the environment,
-settings, dependencies and compatible layout contracts; v2 profiles calculate
-placement from current terminal geometry. Stale or unsupported profiles
+settings, dependencies and compatible layout contracts. Current v3 profiles use
+content-bound executable identities and calculate placement from current terminal
+geometry; legacy v2/v1 profiles remain readable. Runtime capabilities use state
+v2 and calibration uses layout state v3. Explicit maintenance migrates compatible
+legacy calibration only when its identities still prove validity; otherwise
+repeat calibration in the previous layout mode. Startup never migrates state. Stale or unsupported profiles
 preserve Python playback rather than silently changing configuration or layout.
 
 Native activation preserves the Python companion and validates managed ownership.

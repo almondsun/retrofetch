@@ -55,6 +55,30 @@ def main():
         python_env = dict(env, PATH=str(environment / 'bin'), CC='compiler-unavailable')
         help_text = run([environment / 'bin/retrofetch', '--help'], cwd=root, env=python_env).stdout
         assert 'usage:' in help_text, help_text
+        # Exercise newly packaged helpers from the installed wheel, not checkout imports.
+        run([python, '-I', '-c', """
+import os, pathlib, sys
+from retrofetch.executable_identity import executable_identity
+from retrofetch.python_launcher import launcher_text
+p = pathlib.Path('identity-fixture')
+p.write_bytes(b'first'); p.chmod(0o755)
+before = executable_identity(p)
+os.utime(p, ns=(1, 1))
+assert executable_identity(p) == before
+replacement = pathlib.Path('replacement'); replacement.write_bytes(b'first')
+replacement.chmod(0o755); replacement.replace(p)
+assert executable_identity(p) == before
+p.write_bytes(b'other')
+assert executable_identity(p) != before
+text = launcher_text(pathlib.Path('private-package'), interpreter=sys.executable)
+assert text.splitlines()[0] == '#!' + sys.executable
+try:
+    launcher_text(pathlib.Path('private-package'), interpreter='python3')
+except ValueError:
+    pass
+else:
+    raise AssertionError('relative interpreter accepted')
+"""], cwd=root, env=python_env)
         source = root / 'source'
         source.mkdir()
         with tarfile.open(sdist, 'r:gz') as archive:

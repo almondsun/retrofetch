@@ -13,7 +13,8 @@ spec.loader.exec_module(checker)
 
 
 REQUIRED_MODULES = {'retrofetch/cli.py', 'retrofetch/native_install.py',
-                    'retrofetch/native_profile.py', 'retrofetch/selection_v3.py'}
+                    'retrofetch/native_profile.py', 'retrofetch/selection_v3.py',
+                    'retrofetch/executable_identity.py', 'retrofetch/python_launcher.py'}
 
 
 class DistributionTests(unittest.TestCase):
@@ -73,3 +74,21 @@ class DistributionTests(unittest.TestCase):
                 for name in {'native/retrofetch.c', 'scripts/build_native.py', *('src/' + name for name in REQUIRED_MODULES)}:
                     archive.addfile(tarfile.TarInfo('release/' + name), io.BytesIO(b''))
             checker.check(path)
+
+class StartupHelperDistributionTests(unittest.TestCase):
+    def test_missing_startup_helpers_rejected_in_both_artifacts(self):
+        complete = REQUIRED_MODULES | {'retrofetch/executable_identity.py', 'retrofetch/python_launcher.py'}
+        for missing in ('retrofetch/executable_identity.py', 'retrofetch/python_launcher.py'):
+            for source in (False, True):
+                with self.subTest(missing=missing, source=source), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / ('release.tar.gz' if source else 'release.whl')
+                    if source:
+                        with tarfile.open(path, 'w:gz') as archive:
+                            for name in {'native/retrofetch.c', 'scripts/build_native.py', *('src/' + x for x in complete - {missing})}:
+                                archive.addfile(tarfile.TarInfo('release/' + name), io.BytesIO(b''))
+                    else:
+                        with zipfile.ZipFile(path, 'w') as archive:
+                            for name in complete - {missing}:
+                                archive.writestr(name, '')
+                    with self.assertRaisesRegex(ValueError, 'missing required'):
+                        checker.check(path)

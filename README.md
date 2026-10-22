@@ -28,7 +28,7 @@ converts during terminal startup. Code installs into `~/.local`, assets into XDG
 data home. Ensure `~/.local/bin` is on your `PATH`.
 
 For a versioned code-only source archive without Git, see
-[installation](docs/installation.md) and the [v0.3.0 release notes](docs/releases/0.3.0.md).
+[installation](docs/installation.md) and the [v0.3.1 release notes](docs/releases/0.3.1.md).
 
 Already have the extracted collection? Use `sh install.sh --source /path/to/source`.
 See [installation and recovery](docs/installation.md) for directory overrides,
