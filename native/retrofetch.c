@@ -385,15 +385,17 @@ static int layout_padding(int columns,int display_width,int display_height) {
 }
 static int profile(const char *root,int columns,int rows,double cw,double ch,int *supported,int *padding) {
     char path[PATH_MAX]; size_t n=0;
-    if(!join(path,root,"native-runtime.v2.bin")) return 0;
+    if(!join(path,root,"native-runtime.v3.bin")) return 0;
     struct stat present;
-    int v2=lstat(path,&present)==0 || errno!=ENOENT;
+    int v3=lstat(path,&present)==0 || errno!=ENOENT;
+    if(!v3 && !join(path,root,"native-runtime.v2.bin")) return 0;
+    int v2=v3 || lstat(path,&present)==0 || errno!=ENOENT;
     v2_present=v2;
     if(!v2 && !join(path,root,"native-runtime.v1.bin")) return 0;
     unsigned char *b=read_file(path,&n,MAX_BYTES,1), digest[32];
     if(!b) return 0;
     int ok=0; size_t pos=56;
-    if(n<88 || memcmp(b,v2?"RTFXNAT2":"RTFXNAT1",8) || u32(b+8)!=(v2?2u:1u)
+    if(n<88 || memcmp(b,v3?"RTFXNAT3":v2?"RTFXNAT2":"RTFXNAT1",8) || u32(b+8)!=(v3?3u:v2?2u:1u)
             || !sha(b,n-32,digest) || memcmp(digest,b+n-32,32)) goto end;
     uint32_t envs=u32(b+12), deps=u32(b+16), count=u32(b+20);
     if(envs>4096 || deps>128 || !count || count>1000000) goto end;
@@ -406,7 +408,7 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
     uint32_t pad=u32(b+52);
     if(!v2 && pad!=UINT32_MAX && pad>10000) goto end;
     size_t actual_envs=0;
-    for(size_t i=0;environment_keys[i];i++) if(getenv(environment_keys[i])) actual_envs++;
+    for(size_t i=0;environment_keys[i];i++) if((!v3 || strcmp(environment_keys[i],"PATH")) && getenv(environment_keys[i])) actual_envs++;
     if(actual_envs!=envs) goto end;
     char executable[PATH_MAX];
     int resolved_executable=current_fastfetch(executable), bound_executable=0;
@@ -415,7 +417,7 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
         char *key=NULL,*value=NULL;
         if(!take_string(b,n-32,&pos,&key,0) || !take_string(b,n-32,&pos,&value,1)) { free(key); free(value); free(previous); goto end; }
         const char *current=getenv(key);
-        int valid=environment_key(key) && current && !strcmp(current,value) && (!previous || strcmp(previous,key)<0);
+        int valid=environment_key(key) && (!v3 || strcmp(key,"PATH")) && current && !strcmp(current,value) && (!previous || strcmp(previous,key)<0);
         free(previous); previous=key; free(value);
         if(!valid) { free(previous); goto end; }
     }
@@ -423,15 +425,24 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
     for(uint32_t i=0;i<deps;i++) {
         char *file=NULL;
         if(!take_string(b,n-32,&pos,&file,0)) goto end;
-        if(file[0]!='/' || n-32-pos<73 || b[pos]>1) { free(file); goto end; }
+        char *expected_canonical=NULL;
+        if(v3 && !take_string(b,n-32,&pos,&expected_canonical,0)) { free(file); goto end; }
+        if(file[0]!='/' || n-32-pos<(v3?41u:73u) || b[pos]>1) { free(file); free(expected_canonical); goto end; }
         int exists=b[pos++], valid;
+        struct verified_file *v=NULL;
         if(exists) {
-            struct verified_file *v=verified_dependency(file,!strcmp(file,verified_index));
+            v=verified_dependency(file,!strcmp(file,verified_index));
             valid=v && !memcmp(v->digest,b+pos,32);
         } else valid=verified_absent(file);
         pos+=32;
-        struct stat identity;
-        if(exists) {
+        if(v3) {
+            char canonical[PATH_MAX];
+            if(exists) {
+                if(!v || !realpath(file,canonical) || strcmp(canonical,expected_canonical)
+                        || (uint64_t)v->identity.st_size!=u64(b+pos)) valid=0;
+            } else if(u64(b+pos) || expected_canonical[0]!='/') valid=0;
+        } else if(exists) {
+            struct stat identity;
             if(stat(file,&identity)) valid=0;
             else {
                 uint64_t expected[5]={(uint64_t)identity.st_dev,(uint64_t)identity.st_ino,(uint64_t)identity.st_size,
@@ -444,7 +455,7 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
             char canonical[PATH_MAX];
             if(realpath(file,canonical) && !strcmp(canonical,executable)) bound_executable=1;
         }
-        free(file); pos+=40;
+        free(expected_canonical); free(file); pos+=v3?8u:40u;
         if(!valid) goto end;
     }
     if(u32(b+48) && !bound_executable) goto end;

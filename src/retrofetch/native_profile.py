@@ -12,11 +12,11 @@ import shutil
 import struct
 import tempfile
 
-MAGIC = b'RTFXNAT2'
-NAME = 'native-runtime.v2.bin'
+MAGIC = b'RTFXNAT3'
+NAME = 'native-runtime.v3.bin'
 MAX_BYTES = 128 * 1024 * 1024
 ENVIRONMENT_KEYS = (
-    'HOME', 'PATH', 'XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS', 'XDG_STATE_HOME',
+    'HOME', 'XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS', 'XDG_STATE_HOME',
     'XDG_DATA_HOME', 'TERM', 'COLORTERM', 'CLICOLOR', 'CLICOLOR_FORCE',
     'NO_COLOR', 'NO_CONFIG', 'RETROFETCH_DATA_DIR', 'TMUX', 'STY',
 )
@@ -44,7 +44,8 @@ def _snapshot(path):
         exists = 1
     else:
         digest, exists, identity = bytes(32), 0, (0,) * 5
-    return _string(str(path)) + bytes([exists]) + digest + struct.pack('<5Q', *identity)
+    return (_string(str(path)) + _string(str(path.resolve())) + bytes([exists])
+            + digest + struct.pack('<Q', identity[2]), identity)
 
 
 def build_profile(data_dir, *, geometry=None):
@@ -90,7 +91,7 @@ def build_profile(data_dir, *, geometry=None):
     if supported:
         try:
             document, _ = _read_state(_state_file())
-            if document is not None and document['version'] == 2:
+            if document is not None and document['version'] in (2, 3):
                 files = list(dict.fromkeys([*files, *(record[0]
                     for profile in document['profiles'] for record in profile['key']['files'])]))
         except (OSError, ValueError, TypeError, KeyError, RuntimeError):
@@ -104,10 +105,10 @@ def build_profile(data_dir, *, geometry=None):
     if (any(_snapshot(path) != snapshot for path, snapshot in snapshots.items())
             or environment != sorted((key, os.environ[key]) for key in ENVIRONMENT_KEYS if key in os.environ)):
         raise ValueError('Native profile inputs changed during preparation')
-    snapshot_bytes = list(snapshots.values())
-    # Fixed v2 header retains v1 field offsets; geometry slots carry layout
+    snapshot_bytes = [snapshot[0] for snapshot in snapshots.values()]
+    # Fixed v3 header retains v1 field offsets; geometry slots carry layout
     # candidate count, raw logo position and reserved zero doubles instead.
-    body = struct.pack('<8sIIIIIIddIi', MAGIC, 2, len(environment), len(snapshots),
+    body = struct.pack('<8sIIIIIIddIi', MAGIC, 3, len(environment), len(snapshots),
                        len(ordinals), len(candidates), position, 0., 0.,
                        int(supported), padding)
     for name, value in environment:
@@ -125,7 +126,7 @@ def build_profile(data_dir, *, geometry=None):
         raise ValueError('Native profile must not use symlinks')
     previous = destination.read_bytes() if destination.exists() else None
     if previous is not None and (not 88 <= len(previous) <= MAX_BYTES
-            or previous[:8] != MAGIC or struct.unpack_from('<I', previous, 8)[0] != 2
+            or previous[:8] != MAGIC or struct.unpack_from('<I', previous, 8)[0] != 3
             or hashlib.sha256(previous[:-32]).digest() != previous[-32:]):
         raise ValueError('Refusing to replace an unrecognized native profile')
     fd, name = tempfile.mkstemp(prefix='.native-profile-', dir=root)

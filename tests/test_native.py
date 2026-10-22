@@ -38,7 +38,7 @@ class NativeTests(unittest.TestCase):
         self.addCleanup(self.work.cleanup)
         self.home = Path(self.work.name)
         self.env = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / 'config'),
-                        XDG_STATE_HOME=str(self.home / 'state'), TERM='xterm-kitty', TMUX='', STY='')
+                        XDG_STATE_HOME=str(self.home / 'state'), XDG_DATA_HOME=str(self.home / 'share'), TERM='xterm-kitty', TMUX='', STY='')
         self.helpers = self.home / 'bin'
         self.helpers.mkdir()
         helper = self.helpers / 'kitten'
@@ -104,6 +104,32 @@ class NativeTests(unittest.TestCase):
                 mock.patch('retrofetch.calibration.layout_contracts', return_value=(0, 4, [] if padding is None else [(0, 10 + 2 * padding, 0)])):
             return build_profile(root, geometry=(80, 24, 8., 16.))
 
+    def test_content_profile_accepts_metadata_change_and_same_renderer_path_drift(self):
+        root = self.index()
+        self.prepare_profile(root)
+        for path in (root / 'catalog.json', self.helpers / 'fastfetch'):
+            replacement = path.with_suffix('.replacement')
+            replacement.write_bytes(path.read_bytes())
+            replacement.chmod(path.stat().st_mode)
+            replacement.replace(path)
+        earlier = self.home / 'mise-bin'
+        earlier.mkdir()
+        self.env['PATH'] = str(earlier) + ':' + self.env['PATH']
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertIn('FASTFETCH:', result.stdout)
+        self.assertNotIn('FALLBACK:', result.stdout)
+
+    def test_content_profile_rejects_renderer_symlink_retarget(self):
+        root = self.index()
+        self.prepare_profile(root)
+        helper = self.helpers / 'fastfetch'
+        other = self.helpers / 'other'
+        other.write_bytes(helper.read_bytes())
+        other.chmod(0o755)
+        helper.unlink()
+        helper.symlink_to(other)
+        self.assertIn('FALLBACK:', self.run_native(['--data-dir', str(root)], tty=True).stdout)
+
     def test_prepared_combined_uses_finite_fastfetch(self):
         root = self.index()
         self.prepare_profile(root)
@@ -146,7 +172,7 @@ class NativeTests(unittest.TestCase):
         self.assertIn('FALLBACK:', result.stdout)
         self.env.pop('COLORTERM')
         helper = self.helpers / 'fastfetch'
-        os.utime(helper, None)
+        helper.write_text(helper.read_text() + '# changed\n')
         self.assertIn('FALLBACK:', self.run_native(['--data-dir', str(root)], tty=True).stdout)
 
     def test_prepared_filter_configuration(self):
@@ -342,7 +368,7 @@ static ssize_t changing_read(int fd, void *buffer, size_t count) {
                 forwarded = json.loads(result.stdout.split('FALLBACK:', 1)[1].strip())
                 self.assertEqual(forwarded, args)
 
-    def test_v2_profile_survives_tiling_and_font_changes(self):
+    def test_v3_profile_survives_tiling_and_font_changes(self):
         root = self.index()
         self.prepare_profile(root)
         for geometry in ((62, 265, 1855, 992), (62, 129, 903, 992), (30, 80, 800, 600), (3, 2, 14, 48)):
@@ -351,30 +377,63 @@ static ssize_t changing_read(int fd, void *buffer, size_t count) {
                 self.assertIn('FASTFETCH:', result.stdout)
                 self.assertNotIn('FALLBACK:', result.stdout)
 
-    def test_present_corrupt_v2_does_not_downgrade_to_valid_v1(self):
+    def legacy_profile(self, root, version):
+        raw = (root / 'native-runtime.v3.bin').read_bytes()
+        envs, deps, count, candidates = struct.unpack_from('<IIII', raw, 12)
+        position = 56
+        environment = []
+        def string():
+            nonlocal position
+            length, = struct.unpack_from('<I', raw, position)
+            position += 4
+            result = raw[position:position + length]
+            position += length
+            return result
+        for _ in range(envs):
+            environment.append((string(), string()))
+        environment.append((b'PATH', os.fsencode(self.env['PATH'])))
+        encoded = b''
+        for key, value in sorted(environment):
+            encoded += struct.pack('<I', len(key)) + key + struct.pack('<I', len(value)) + value
+        for _ in range(deps):
+            path = string()
+            string()  # v3 canonical path
+            exists = raw[position]
+            digest = raw[position + 1:position + 33]
+            position += 41
+            st = Path(os.fsdecode(path)).stat() if exists else None
+            identity = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns) if st else (0,) * 5
+            encoded += struct.pack('<I', len(path)) + path + bytes([exists]) + digest + struct.pack('<5Q', *identity)
+        if version == 1:
+            header = struct.pack('<8sIIIIIIddIi', b'RTFXNAT1', 1, envs + 1, deps, count, 80, 24, 8., 16., 1, 3)
+            tail = raw[position + candidates * 12:-32]
+        else:
+            header = bytearray(raw[:56])
+            struct.pack_into('<8sII', header, 0, b'RTFXNAT2', 2, envs + 1)
+            tail = raw[position:-32]
+        body = header + encoded + tail
+        return body + hashlib.sha256(body).digest()
+
+    def test_present_corrupt_v3_does_not_downgrade_to_legacy(self):
         root = self.index()
         self.prepare_profile(root)
-        raw = (root / 'native-runtime.v2.bin').read_bytes()
-        envs, deps, count, candidates = struct.unpack_from('<IIII', raw, 12)
-        end = len(raw) - 32 - count * 4 - candidates * 12
-        body = struct.pack('<8sIIIIIIddIi', b'RTFXNAT1', 1, envs, deps, count, 80, 24, 8., 16., 1, 3)
-        body += raw[56:end] + raw[end + candidates * 12:-32]
-        (root / 'native-runtime.v1.bin').write_bytes(body + hashlib.sha256(body).digest())
+        for version in (1, 2):
+            (root / f'native-runtime.v{version}.bin').write_bytes(self.legacy_profile(root, version))
+        path = root / 'native-runtime.v3.bin'
+        path.unlink()
+        self.assertIn('FASTFETCH:', self.run_native(['--data-dir', str(root), 'art'], tty=True).stdout)
         (root / 'native-runtime.v2.bin').unlink()
-        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
-        self.assertIn('FASTFETCH:', result.stdout)
-        result = self.run_native(['--data-dir', str(root), 'art'], tty=True, geometry=(62, 129, 903, 992))
-        self.assertIn('FALLBACK:', result.stdout)
-        (root / 'native-runtime.v2.bin').write_bytes(b'corrupt')
+        self.assertIn('FASTFETCH:', self.run_native(['--data-dir', str(root), 'art'], tty=True).stdout)
+        path.write_bytes(b'corrupt')
         result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
         self.assertIn('FALLBACK:', result.stdout)
         self.assertNotIn('FASTFETCH:', result.stdout)
 
-    def test_v2_layout_contract_matches_python_geometry(self):
+    def test_v3_layout_contract_matches_python_geometry(self):
         from retrofetch.rendering import display_geometry
         root = self.index()
         self.prepare_profile(root)
-        base = (root / 'native-runtime.v2.bin').read_bytes()
+        base = (root / 'native-runtime.v3.bin').read_bytes()
         eligible = struct.unpack_from('<I', base, 20)[0]
         count = struct.unpack_from('<I', base, 24)[0]
         end = len(base) - 32 - eligible * 4 - count * 12
@@ -386,7 +445,7 @@ static ssize_t changing_read(int fd, void *buffer, size_t count) {
                     struct.pack_into('<I', body, 52, 4)
                     body += struct.pack('<III', 1, 30, 105) + struct.pack('<III', 0, 16, 0)
                     body += base[-32 - eligible * 4:-32]
-                    path = root / 'native-runtime.v2.bin'
+                    path = root / 'native-runtime.v3.bin'
                     path.write_bytes(body + hashlib.sha256(body).digest())
                     result = self.run_native(['--data-dir', str(root), 'art'], tty=True, geometry=(62, columns, columns * 7, 992))
                     self.assertNotIn('FALLBACK:', result.stdout)
@@ -399,14 +458,14 @@ static ssize_t changing_read(int fd, void *buffer, size_t count) {
                         reference = 30 if max(1, columns - width - 4) == 105 else 16
                         self.assertEqual(args[args.index('--logo-padding-top') + 1], str(max(0, (reference - height) // 2)))
 
-    def test_resigned_invalid_v2_contract_falls_back(self):
+    def test_resigned_invalid_v3_contract_falls_back(self):
         root = self.index()
         self.prepare_profile(root)
-        base = (root / 'native-runtime.v2.bin').read_bytes()
+        base = (root / 'native-runtime.v3.bin').read_bytes()
         for offset, value in ((24, 65), (28, 4), (52, 20001), (32, 1)):
             with self.subTest(offset=offset):
                 body = bytearray(base[:-32]); struct.pack_into('<I', body, offset, value)
-                (root / 'native-runtime.v2.bin').write_bytes(body + hashlib.sha256(body).digest())
+                (root / 'native-runtime.v3.bin').write_bytes(body + hashlib.sha256(body).digest())
                 result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
                 self.assertIn('FALLBACK:', result.stdout)
                 self.assertNotIn('FASTFETCH:', result.stdout)
