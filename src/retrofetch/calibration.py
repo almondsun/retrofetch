@@ -86,7 +86,8 @@ def _key(config, files):
                            stat.st_mtime_ns, stat.st_ctime_ns] if stat else None}
 
 
-def _logo(files, columns, logo_width):
+def _logo_options(files):
+    """Read unresolved logo placement shared by runtime and offline profiles."""
     options = {}
     for name in files:
         path = Path(name)
@@ -106,9 +107,14 @@ def _logo(files, columns, logo_width):
     left, right = padding.get('left', 0), padding.get('right', 4)
     if position not in ('auto', 'left', 'right', 'top') or any(type(v) is not int or not 0 <= v <= 10000 for v in (left, right)):
         raise ValueError('Unsupported Fastfetch logo layout')
-    if position == 'auto':
-        position = 'left' if columns - logo_width - left - right >= 32 else 'top'
     return position, left + right
+
+
+def _logo(files, columns, logo_width):
+    position, horizontal_padding = _logo_options(files)
+    if position == 'auto':
+        position = 'left' if columns - logo_width - horizontal_padding >= 32 else 'top'
+    return position, horizontal_padding
 
 
 def _visible_rows(output, columns):
@@ -341,3 +347,43 @@ def layout_padding(config, size, geometry, display_height, *, state_file=None):
         return None
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         return None
+
+
+
+def layout_contracts(config=None, *, state_file=None):
+    """Extract newest-first compatible contracts without binding terminal size.
+
+    Different placement rules cannot share the v2 profile header. Refuse that
+    unusual historical state rather than silently changing Python precedence.
+    """
+    path = Path(state_file) if state_file is not None else _state_file()
+    try:
+        document, _ = _read_state(path)
+        if document is None or document['version'] != 2:
+            return 0, 0, []
+        current_keys = {}
+        candidates = []
+        placement = None
+        divergent = False
+        for profile in reversed(document['profiles']):
+            key = profile['key']
+            files = [record[0] for record in key['files']]
+            identity = tuple(files)
+            if identity not in current_keys:
+                current_keys[identity] = _key(config, files)
+            if current_keys[identity] != key:
+                continue
+            position, padding = _logo_options(files)
+            options = (('left', 'right', 'top', 'auto').index(position), padding)
+            if placement is not None and placement != options:
+                divergent = True
+                break
+            placement = options
+            width_sensitive = profile['mode'] == 'width-sensitive'
+            candidates.append((int(width_sensitive), profile['reference_rows'],
+                               profile['information_columns'] if width_sensitive else 0))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return 0, 0, []
+    if divergent:
+        raise ValueError('Native profile cannot represent differing historical logo placement')
+    return (*placement, candidates) if placement is not None else (0, 0, [])

@@ -48,11 +48,11 @@ class NativeTests(unittest.TestCase):
         self.gif = self.home / 'art.gif'
         self.gif.write_bytes(b'GIF89a' + struct.pack('<HH', 160, 160))
 
-    def run_native(self, args, tty=False):
+    def run_native(self, args, tty=False, geometry=(24, 80, 0, 0)):
         if not tty:
             return subprocess.run([str(self.binary), *args], env=self.env, capture_output=True, text=True)
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *geometry))
         try:
             result = subprocess.run([str(self.binary), *args], env=self.env, stdout=slave, stderr=subprocess.PIPE)
             os.close(slave)
@@ -101,7 +101,7 @@ class NativeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch('retrofetch.runtime_cache.cached_capabilities', return_value=True), \
                 mock.patch('retrofetch.calibration._config_files', return_value=[]), \
-                mock.patch('retrofetch.calibration.layout_padding', return_value=padding):
+                mock.patch('retrofetch.calibration.layout_contracts', return_value=(0, 4, [] if padding is None else [(0, 10 + 2 * padding, 0)])):
             return build_profile(root, geometry=(80, 24, 8., 16.))
 
     def test_prepared_combined_uses_finite_fastfetch(self):
@@ -257,6 +257,159 @@ class NativeTests(unittest.TestCase):
         asset.unlink()
         asset.symlink_to(self.gif)
         self.assertIn('FALLBACK:', self.run_native(['--animation-only', '--data-dir', str(root)], tty=True).stdout)
+
+
+    def instrument_verification(self):
+        source = self.home / 'verification-probe.c'
+        source.write_text(r'''
+#define _GNU_SOURCE
+#include <stdarg.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+static int counted_open(const char *path, int flags, ...) {
+    va_list args;
+    va_start(args, flags);
+    int mode = (flags & O_CREAT) ? va_arg(args, int) : 0;
+    va_end(args);
+    int fd = open(path, flags, mode);
+    const char *log = getenv("PROBE_LOG");
+    if (log) {
+        int out = open(log, O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (out >= 0) { dprintf(out, "%s\n", path); close(out); }
+    }
+    return fd;
+}
+static ssize_t changing_read(int fd, void *buffer, size_t count) {
+    ssize_t n = read(fd, buffer, count);
+    const char *target = getenv("RACE_PATH");
+    if (n == 10 && target && !memcmp(buffer, "GIF89a", 6)) {
+        int out = open(target, O_WRONLY);
+        if (out >= 0) { pwrite(out, "!", 1, 0); close(out); }
+        unsetenv("RACE_PATH");
+    }
+    return n;
+}
+#define open counted_open
+#define read changing_read
+#include ''' + json.dumps(str(ROOT / 'native/retrofetch.c')) + '\n')
+        binary = self.home / 'instrumented-retrofetch'
+        command = [os.environ.get('CC', 'cc'), '-std=c11', '-O1',
+                   '-DRETROFETCH_PYTHON_LAUNCHER=' + json.dumps(str(self.fallback))]
+        if os.environ.get('RETROFETCH_TEST_SANITIZE'):
+            command += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+        subprocess.run(command + [str(source), '-lcrypto', '-lm', '-o', str(binary)],
+                       check=True, capture_output=True)
+        self.binary = binary
+
+    def test_public_combined_reads_index_and_catalog_once(self):
+        root = self.index()
+        self.prepare_profile(root)
+        self.instrument_verification()
+        log = self.home / 'opens.log'
+        self.env['PROBE_LOG'] = str(log)
+        before = {p.name: p.read_bytes() for p in
+                  (root / 'catalog.json', root / 'selection.v3.idx')}
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('FASTFETCH:', result.stdout)
+        self.assertNotIn('FALLBACK:', result.stdout)
+        opened = log.read_text().splitlines()
+        for name, original in before.items():
+            self.assertEqual(opened.count(str(root / name)), 1, opened)
+            self.assertEqual((root / name).read_bytes(), original)
+
+    def test_public_combined_rechecks_dependencies_after_gif_header(self):
+        root = self.index()
+        self.instrument_verification()
+        catalog = root / 'catalog.json'
+        original = catalog.read_bytes()
+        for name in ('catalog', 'executable'):
+            with self.subTest(dependency=name):
+                catalog.write_bytes(original)
+                self.prepare_profile(root)
+                target = catalog if name == 'catalog' else self.helpers / 'fastfetch'
+                self.env['RACE_PATH'] = str(target)
+                args = ['--data-dir', str(root), 'art']
+                result = self.run_native(args, tty=True)
+                self.assertEqual(target.read_bytes()[:1], b'!')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('FALLBACK:', result.stdout)
+                self.assertNotIn('FASTFETCH:', result.stdout)
+                self.assertNotIn('KITTEN:', result.stdout)
+                forwarded = json.loads(result.stdout.split('FALLBACK:', 1)[1].strip())
+                self.assertEqual(forwarded, args)
+
+    def test_v2_profile_survives_tiling_and_font_changes(self):
+        root = self.index()
+        self.prepare_profile(root)
+        for geometry in ((62, 265, 1855, 992), (62, 129, 903, 992), (30, 80, 800, 600), (3, 2, 14, 48)):
+            with self.subTest(geometry=geometry):
+                result = self.run_native(['--data-dir', str(root), 'art'], tty=True, geometry=geometry)
+                self.assertIn('FASTFETCH:', result.stdout)
+                self.assertNotIn('FALLBACK:', result.stdout)
+
+    def test_present_corrupt_v2_does_not_downgrade_to_valid_v1(self):
+        root = self.index()
+        self.prepare_profile(root)
+        raw = (root / 'native-runtime.v2.bin').read_bytes()
+        envs, deps, count, candidates = struct.unpack_from('<IIII', raw, 12)
+        end = len(raw) - 32 - count * 4 - candidates * 12
+        body = struct.pack('<8sIIIIIIddIi', b'RTFXNAT1', 1, envs, deps, count, 80, 24, 8., 16., 1, 3)
+        body += raw[56:end] + raw[end + candidates * 12:-32]
+        (root / 'native-runtime.v1.bin').write_bytes(body + hashlib.sha256(body).digest())
+        (root / 'native-runtime.v2.bin').unlink()
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertIn('FASTFETCH:', result.stdout)
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True, geometry=(62, 129, 903, 992))
+        self.assertIn('FALLBACK:', result.stdout)
+        (root / 'native-runtime.v2.bin').write_bytes(b'corrupt')
+        result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+        self.assertIn('FALLBACK:', result.stdout)
+        self.assertNotIn('FASTFETCH:', result.stdout)
+
+    def test_v2_layout_contract_matches_python_geometry(self):
+        from retrofetch.rendering import display_geometry
+        root = self.index()
+        self.prepare_profile(root)
+        base = (root / 'native-runtime.v2.bin').read_bytes()
+        eligible = struct.unpack_from('<I', base, 20)[0]
+        count = struct.unpack_from('<I', base, 24)[0]
+        end = len(base) - 32 - eligible * 4 - count * 12
+        for position in range(4):
+            for columns in (2, 55, 56, 129, 265):
+                with self.subTest(position=position, columns=columns):
+                    body = bytearray(base[:end])
+                    struct.pack_into('<II', body, 24, 2, position)
+                    struct.pack_into('<I', body, 52, 4)
+                    body += struct.pack('<III', 1, 30, 105) + struct.pack('<III', 0, 16, 0)
+                    body += base[-32 - eligible * 4:-32]
+                    path = root / 'native-runtime.v2.bin'
+                    path.write_bytes(body + hashlib.sha256(body).digest())
+                    result = self.run_native(['--data-dir', str(root), 'art'], tty=True, geometry=(62, columns, columns * 7, 992))
+                    self.assertNotIn('FALLBACK:', result.stdout)
+                    args = json.loads(result.stdout.split('FASTFETCH:', 1)[1].strip())
+                    _, _, width, height = display_geometry(160, 160, (columns, 62, 7, 16))
+                    top = position == 2 or (position == 3 and columns - width - 4 < 32)
+                    if top:
+                        self.assertNotIn('--logo-padding-top', args)
+                    else:
+                        reference = 30 if max(1, columns - width - 4) == 105 else 16
+                        self.assertEqual(args[args.index('--logo-padding-top') + 1], str(max(0, (reference - height) // 2)))
+
+    def test_resigned_invalid_v2_contract_falls_back(self):
+        root = self.index()
+        self.prepare_profile(root)
+        base = (root / 'native-runtime.v2.bin').read_bytes()
+        for offset, value in ((24, 65), (28, 4), (52, 20001), (32, 1)):
+            with self.subTest(offset=offset):
+                body = bytearray(base[:-32]); struct.pack_into('<I', body, offset, value)
+                (root / 'native-runtime.v2.bin').write_bytes(body + hashlib.sha256(body).digest())
+                result = self.run_native(['--data-dir', str(root), 'art'], tty=True)
+                self.assertIn('FALLBACK:', result.stdout)
+                self.assertNotIn('FASTFETCH:', result.stdout)
 
 
 if __name__ == '__main__':

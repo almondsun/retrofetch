@@ -68,7 +68,7 @@ def main(argv=None):
     modes.add_argument("--prepare", type=Path, metavar="SOURCE", help="prepare the full library upfront from an extracted collection")
     modes.add_argument("--validate", action="store_true", help="verify prepared catalog file hashes and GIF metadata")
     modes.add_argument("--normalize", action="store_true", help="normalize prepared animations upfront and rebuild their selection index")
-    modes.add_argument("--refresh-native", action="store_true", help="prepare an optional native profile for the current terminal after explicit runtime refresh")
+    modes.add_argument("--refresh-native", action="store_true", help="prepare an optional resize-aware native profile after explicit runtime refresh")
     modes.add_argument("--refresh-runtime", action="store_true", help="rebuild the selection index and refresh Fastfetch capability metadata without converting assets")
     parser.add_argument("--layout-mode", choices=("fixed-height", "width-sensitive"), help="calibration contract: fixed-height reuses rows across tiling/font changes; default: width-sensitive")
     modes.add_argument("--calibrate-layout", action="store_true", help="measure Fastfetch layout once for centered native logos; rerun after layout changes")

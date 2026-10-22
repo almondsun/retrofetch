@@ -202,10 +202,12 @@ retrofetch --refresh-runtime
 retrofetch --refresh-native
 ```
 
-The profile binds prepared category eligibility, relevant environment, exact
-terminal geometry, capability/calibration inputs, and dependency content/identity.
-Changed settings, resized geometry, unsupported options or stale state cause
-silent delegation to the Python entrypoint before output. Combined native mode
+The v2 profile binds prepared category eligibility, relevant environment,
+capability/calibration contracts, and dependency content/identity. Placement is
+calculated from current terminal geometry; compatible resizing stays native.
+Changed settings, unsupported options or stale dependencies cause silent
+delegation to the Python entrypoint before output. Legacy v1 profiles still
+require their original geometry. Combined native mode
 currently supports default sizing and prepared 160x160 canvases; ad-hoc filters,
 custom sizing/configuration and non-ASCII query folding remain Python paths.
 No user configuration is rewritten. Do not run maintenance against active assets
@@ -265,6 +267,20 @@ than allocating the complete catalog. File size, regular-file status and content
 remain verified; descriptor and pathname identities must stay unchanged during
 reading. Legitimate dependency symlinks remain supported. This reduces temporary
 memory, not the memory Kitty uses to display an animation.
+
+### Resize-aware native profiles
+
+Explicit `retrofetch --refresh-native` now writes `native-runtime.v2.bin`.
+It preserves compatible calibration history and computes placement for the
+current window and cell dimensions. Fixed-height contracts survive resizing;
+width-sensitive contracts apply only at their calibrated information width.
+Missing compatible layout retains native placement and the existing diagnostic.
+No configuration or calibration is measured or written during startup.
+
+The frontend prefers v2; only an absent v2 permits the legacy v1 reader, which
+still requires its original geometry. A present invalid v2 delegates to Python.
+Refreshing leaves v1 intact for older binaries and rollback. Unsupported custom
+settings and changed dependencies still delegate safely.
 
 Within one invocation, profile and selection validation share verified catalog
 and index snapshots. Full dependency digests, the index's separate internal
