@@ -69,6 +69,8 @@ def install_native(prefix, frontend):
             python = previous[launcher]
         if python is None or MANAGED not in python.decode('utf-8').splitlines()[:3]:
             raise InstallationError('a managed Python installation is required')
+        from .python_launcher import launcher_text
+        python = launcher_text(package).encode()
         new_marker = json.dumps(dict(managed_by='retrofetch', version=2,
             native_sha256=_digest(binary), python_sha256=_digest(python))).encode() + b'\n'
         modes = {path: stat.S_IMODE(path.stat().st_mode) if data is not None else None

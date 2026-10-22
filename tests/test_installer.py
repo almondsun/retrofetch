@@ -37,6 +37,35 @@ class InstallerTests(unittest.TestCase):
         self.tools.start()
         self.addCleanup(self.tools.stop)
 
+    def test_launcher_uses_absolute_interpreter_and_ignores_path_shims(self):
+        import sys
+        with patch("retrofetch.installer.prepare_library", return_value={}):
+            install(self.prefix, self.data, source=self.source)
+        launcher = self.prefix / "bin/retrofetch"
+        self.assertEqual(launcher.read_text().splitlines()[0], "#!" + sys.executable)
+        shim = self.root / "python3"
+        shim.write_text("#!/bin/sh\nexit 91\n")
+        shim.chmod(0o755)
+        result = subprocess.run([str(launcher), "--help"], capture_output=True,
+                                env={**os.environ, "PATH": str(self.root)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_launcher_preserves_absolute_symlink_and_rejects_bad_interpreters(self):
+        import sys
+        from retrofetch.python_launcher import launcher_text
+        entry = self.root / "python-stable"
+        entry.symlink_to(sys.executable)
+        self.assertTrue(launcher_text(self.prefix / "lib/retrofetch", interpreter=entry)
+                        .startswith("#!" + str(entry) + "\n"))
+        for invalid in ("python3", self.root / "missing", str(entry) + "\ninvalid"):
+            with self.subTest(interpreter=invalid), self.assertRaises(ValueError):
+                launcher_text(self.prefix, interpreter=invalid)
+        old = self.root / "old-python"
+        old.write_text('#!/bin/sh\nprintf "[3, 10]"\n')
+        old.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "3.11"):
+            launcher_text(self.prefix, interpreter=old)
+
     def test_download_requires_explicit_acceptance_before_network(self):
         with patch("retrofetch.installer.acquire_collections") as acquire, self.assertRaises(InstallationError):
             install(self.prefix, self.data, cache_dir=self.root / "cache")

@@ -202,10 +202,13 @@ retrofetch --refresh-runtime
 retrofetch --refresh-native
 ```
 
-The profile binds prepared category eligibility, relevant environment, exact
-terminal geometry, capability/calibration inputs, and dependency content/identity.
-Changed settings, resized geometry, unsupported options or stale state cause
-silent delegation to the Python entrypoint before output. Combined native mode
+The current v3 profile binds prepared category eligibility, relevant environment,
+capability/calibration contracts, and dependency content/identity. Placement is
+calculated from current terminal geometry; compatible resizing stays native.
+Changed settings, unsupported options or stale dependencies cause silent
+delegation to the Python entrypoint before output. Legacy v2 profiles remain
+readable, and legacy v1 profiles still
+require their original geometry. Combined native mode
 currently supports default sizing and prepared 160x160 canvases; ad-hoc filters,
 custom sizing/configuration and non-ASCII query folding remain Python paths.
 No user configuration is rewritten. Do not run maintenance against active assets
@@ -257,3 +260,61 @@ left/right/top layouts, animation-only playback, motion after frontend exit,
 interactive prompt placement, scrolling, clearing, and intentional custom-size
 Python fallback. Native execution was independently confirmed without a Python
 fallback. Repeat affected visual checks when changing the rendering boundary.
+
+### Bounded native verification memory
+
+The native frontend streams dependency SHA-256 through a 64 KiB buffer rather
+than allocating the complete catalog. File size, regular-file status and content
+remain verified; descriptor and pathname identities must stay unchanged during
+reading. Legitimate dependency symlinks remain supported. This reduces temporary
+memory, not the memory Kitty uses to display an animation.
+
+### Resize-aware native profiles
+
+Explicit `retrofetch --refresh-native` now writes `native-runtime.v3.bin`.
+It preserves compatible calibration history and computes placement for the
+current window and cell dimensions. Fixed-height contracts survive resizing;
+width-sensitive contracts apply only at their calibrated information width.
+Missing compatible layout retains native placement and the existing diagnostic.
+No configuration or calibration is measured or written during startup.
+
+The frontend prefers v3; only an absent v3 permits the legacy v2/v1 readers.
+A present invalid successor delegates to Python without downgrading. Refreshing
+leaves old profiles intact for rollback. Version 3 binds logical/canonical paths,
+file lengths and complete SHA-256 digests, not persistent device/inode/timestamps.
+It permits PATH changes only when the first current Fastfetch executable remains
+the same canonical, content-bound renderer. Other environment guards remain.
+Unsupported custom settings and changed dependencies still delegate safely.
+
+Capability refresh writes runtime state v2; explicit calibration writes layout
+state v3 using content-bound Fastfetch identity. Legacy readers remain supported.
+Upgrade maintenance may call `retrofetch.calibration.migrate_layout_state()` only
+when legacy executable/configuration/environment identities still match; otherwise
+run `retrofetch --calibrate-layout --layout-mode <previous-mode>` explicitly.
+Migration preserves a `.v2.bak`; stale state is never promoted during startup.
+Managed Python launchers retain the selected absolute Python 3.11+ interpreter
+entry, including a stable symlink, rather than resolving Python through PATH.
+Repair the managed installation if that interpreter entry is removed.
+
+Within one invocation, profile and selection validation share verified catalog
+and index snapshots. Full dependency digests, the index's separate internal
+checksum, catalog binding, and all record/key checks remain mandatory. Open
+snapshots are identity-checked before rendering and then released; there is no
+persistent verification process or timestamp-only content cache.
+
+
+### Optional Omarchy launch integration
+
+Desktop sharing is user-local and is not enabled by the installer. A user
+`kitty.desktop` override may retain the system desktop fields and add
+`--single-instance --instance-group=omarchy-retrofetch` to its `Exec` line. This
+keeps Omarchy's normal launcher and working-directory discovery. Windows share
+Kitty's renderer/helpers (and its process-failure boundary); no hidden server or
+waiting client is needed. Existing unshared windows need not be restarted.
+
+On Lua-based Omarchy, a user `o.window("kitty", { no_anim = true })` rule removes
+compositor motion for Kitty only; it does not change GIF playback. Validate with
+`hyprctl reload` and `hyprctl configerrors`. Keep the vendor Mise activation and
+remove a duplicate personal activation only when one is actually present.
+Back up user files and the complete managed installation/state before activation;
+restore the native/Python pair, ownership marker, package and state together.

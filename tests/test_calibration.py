@@ -24,6 +24,57 @@ class CalibrationTests(unittest.TestCase):
         self.state = self.root / 'layout.json'
         self.geometry = (120, 40, 10, 20)
 
+    def test_content_identity_and_explicit_legacy_migration(self):
+        from retrofetch.calibration import _key, migrate_layout_state
+        binary = self.root / 'fastfetch'
+        binary.write_bytes(b'unchanged')
+        with patch('retrofetch.calibration.shutil.which', return_value=str(binary)):
+            with patch('retrofetch.calibration._measure', return_value=30):
+                calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state,
+                                 layout_mode='fixed-height')
+            self.assertEqual(json.loads(self.state.read_text())['version'], 3)
+            replacement = binary.with_suffix('.new')
+            replacement.write_bytes(binary.read_bytes())
+            replacement.replace(binary)
+            self.assertEqual(layout_padding(str(self.config), None, self.geometry, 8,
+                                            state_file=self.state), 11)
+            document = json.loads(self.state.read_text())
+            document['version'] = 2
+            document['profiles'][0]['key'] = _key(str(self.config), [str(self.config)], legacy=True)
+            self.state.write_text(json.dumps(document))
+            original = self.state.read_bytes()
+            report = migrate_layout_state(state_file=self.state)
+            self.assertEqual(report['profiles'], 1)
+            self.assertEqual(self.state.with_name('layout.json.v2.bak').read_bytes(), original)
+            self.assertEqual(json.loads(self.state.read_text())['version'], 3)
+            self.state.write_bytes(original)
+            binary.write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'recalibration'):
+                migrate_layout_state(state_file=self.state)
+            self.assertEqual(self.state.read_bytes(), original)
+
+    def test_migration_rejects_changed_environment_unknown_version_and_backup(self):
+        from retrofetch.calibration import _key, migrate_layout_state
+        key = _key(str(self.config), [str(self.config)], legacy=True)
+        document = dict(owner='retrofetch-layout', version=2, profiles=[
+            dict(mode='width-sensitive', key=key, reference_rows=30, information_columns=96)])
+        self.state.write_text(json.dumps(document))
+        before = self.state.read_bytes()
+        with patch.dict(os.environ, {'TERM': 'changed'}), self.assertRaises(ValueError):
+            migrate_layout_state(state_file=self.state)
+        self.assertEqual(self.state.read_bytes(), before)
+        backup = self.state.with_name('layout.json.v2.bak')
+        backup.write_text('unrelated')
+        with self.assertRaises(ValueError):
+            migrate_layout_state(state_file=self.state)
+        self.assertEqual(self.state.read_bytes(), before)
+        document['version'] = 99
+        self.state.write_text(json.dumps(document))
+        before = self.state.read_bytes()
+        with self.assertRaises(ValueError):
+            migrate_layout_state(state_file=self.state)
+        self.assertEqual(self.state.read_bytes(), before)
+
     def test_explicit_calibration_measures_once_and_centers(self):
         with patch('retrofetch.calibration._measure', return_value=29) as measure:
             report = calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
@@ -160,7 +211,7 @@ class CalibrationTests(unittest.TestCase):
         with patch('retrofetch.calibration._measure', return_value=30):
             calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)
         self.assertEqual(self.state.with_name(self.state.name + '.v1.bak').read_bytes(), original)
-        self.assertEqual(json.loads(self.state.read_text())['version'], 2)
+        self.assertEqual(json.loads(self.state.read_text())['version'], 3)
         self.state.write_text('{"owner":"someone-else","version":2,"profiles":[]}')
         with patch('retrofetch.calibration._measure') as measure, self.assertRaises(ValueError):
             calibrate_layout(str(self.config), geometry=self.geometry, state_file=self.state)

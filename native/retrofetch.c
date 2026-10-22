@@ -29,6 +29,17 @@ static int safe_path(const char *p) {
     char resolved[PATH_MAX];
     return p[0]=='/' && realpath(p,resolved) && strcmp(p,resolved)==0;
 }
+static int same_identity(const struct stat *a,const struct stat *b) {
+    return a->st_dev==b->st_dev && a->st_ino==b->st_ino && a->st_size==b->st_size
+        && a->st_mtim.tv_sec==b->st_mtim.tv_sec && a->st_mtim.tv_nsec==b->st_mtim.tv_nsec
+        && a->st_ctim.tv_sec==b->st_ctim.tv_sec && a->st_ctim.tv_nsec==b->st_ctim.tv_nsec
+        && S_ISREG(b->st_mode);
+}
+static int stable_file(int fd,const char *path,const struct stat *before) {
+    struct stat after,named;
+    return !fstat(fd,&after) && !stat(path,&named)
+        && same_identity(before,&after) && same_identity(before,&named);
+}
 static unsigned char *read_file(const char *path, size_t *length, size_t limit, int nofollow) {
     int fd=open(path,O_RDONLY|O_NONBLOCK|(nofollow?O_NOFOLLOW:0));
     struct stat st;
@@ -45,14 +56,127 @@ static unsigned char *read_file(const char *path, size_t *length, size_t limit, 
     }
     unsigned char extra;
     ssize_t tail=read(fd,&extra,1);
+    int stable=stable_file(fd,path,&st);
     close(fd);
-    if(tail!=0) { free(data); return NULL; }
+    if(tail!=0 || !stable) { free(data); return NULL; }
     data[n]=0; *length=n; return data;
 }
-static int file_digest(const char *path,unsigned char out[32]) {
-    size_t n=0; unsigned char *data=read_file(path,&n,MAX_BYTES,0);
-    if(!data) return 0;
-    int ok=sha(data,n,out); free(data); return ok;
+static int __attribute__((unused)) file_digest(const char *path,unsigned char out[32]) {
+    int fd=open(path,O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+    struct stat before;
+    if(fd<0) return 0;
+    if(fstat(fd,&before) || !S_ISREG(before.st_mode) || before.st_size<0
+            || (uint64_t)before.st_size>MAX_BYTES) { close(fd); return 0; }
+    EVP_MD_CTX *context=EVP_MD_CTX_new();
+    int ok=0;
+    if(!context || EVP_DigestInit_ex(context,EVP_sha256(),NULL)!=1) goto end;
+    unsigned char buffer[65536];
+    size_t remaining=(size_t)before.st_size;
+    while(remaining) {
+        size_t count=remaining<sizeof buffer?remaining:sizeof buffer;
+        ssize_t got=read(fd,buffer,count);
+        if(got<0 && errno==EINTR) continue;
+        if(got<=0 || EVP_DigestUpdate(context,buffer,(size_t)got)!=1) goto end;
+        remaining-=(size_t)got;
+    }
+    ssize_t tail;
+    do { tail=read(fd,buffer,1); } while(tail<0 && errno==EINTR);
+    unsigned int length=0;
+    if(tail || !stable_file(fd,path,&before)
+            || EVP_DigestFinal_ex(context,out,&length)!=1 || length!=32) goto end;
+    ok=1;
+end:
+    EVP_MD_CTX_free(context); close(fd); return ok;
+}
+/* Invocation-local ownership: content is never reused across launches. */
+struct verified_file {
+    char *path;
+    int fd;
+    struct stat identity;
+    unsigned char digest[32], inner_digest[32], *bytes;
+    size_t length;
+};
+static struct verified_file verified[130];
+static size_t verified_count=0;
+static char verified_index[PATH_MAX], verified_executable[PATH_MAX];
+static void verification_clear(void) {
+    for(size_t i=0;i<verified_count;i++) {
+        if(verified[i].fd>=0) close(verified[i].fd);
+        free(verified[i].path); free(verified[i].bytes);
+    }
+    verified_count=0;
+}
+static int verification_valid(void) {
+    for(size_t i=0;i<verified_count;i++) {
+        struct verified_file *v=&verified[i];
+        if(v->fd>=0) {
+            if(!stable_file(v->fd,v->path,&v->identity)) return 0;
+        } else {
+            struct stat st;
+            if(lstat(v->path,&st)==0 || errno!=ENOENT) return 0;
+        }
+    }
+    return 1;
+}
+static struct verified_file *verified_dependency(const char *path,int keep) {
+    for(size_t i=0;i<verified_count;i++) if(!strcmp(verified[i].path,path)) {
+        struct verified_file *v=&verified[i];
+        return (!keep || v->bytes) && verification_valid()?v:NULL;
+    }
+    if(verified_count>=130) return NULL;
+    struct verified_file value={0}; value.fd=-1;
+    value.path=strdup(path);
+    if(!value.path) return NULL;
+    value.fd=open(path,O_RDONLY|O_NONBLOCK|O_CLOEXEC|(keep?O_NOFOLLOW:0));
+    if(value.fd<0 || fstat(value.fd,&value.identity) || !S_ISREG(value.identity.st_mode)
+            || value.identity.st_size<0 || (uint64_t)value.identity.st_size>MAX_BYTES) goto fail;
+    value.length=(size_t)value.identity.st_size;
+    if(keep) {
+        value.bytes=malloc(value.length+1);
+        if(!value.bytes) goto fail;
+    }
+    EVP_MD_CTX *full=EVP_MD_CTX_new(), *inner=keep?EVP_MD_CTX_new():NULL;
+    int ok=full && EVP_DigestInit_ex(full,EVP_sha256(),NULL)==1;
+    if(keep) ok=ok && inner && value.length>=32 && EVP_DigestInit_ex(inner,EVP_sha256(),NULL)==1;
+    unsigned char buffer[65536]; size_t done=0;
+    while(ok && done<value.length) {
+        size_t count=value.length-done;
+        if(count>sizeof buffer) count=sizeof buffer;
+        ssize_t got=read(value.fd,buffer,count);
+        if(got<0 && errno==EINTR) continue;
+        if(got<=0) { ok=0; break; }
+        size_t size=(size_t)got;
+        ok=EVP_DigestUpdate(full,buffer,size)==1;
+        if(keep) {
+            memcpy(value.bytes+done,buffer,size);
+            size_t prefix=value.length-32;
+            size_t part=done<prefix?(size<prefix-done?size:prefix-done):0;
+            if(part && EVP_DigestUpdate(inner,buffer,part)!=1) ok=0;
+        }
+        done+=size;
+    }
+    ssize_t tail;
+    do { tail=read(value.fd,buffer,1); } while(tail<0 && errno==EINTR);
+    unsigned int length=0;
+    ok=ok && tail==0 && stable_file(value.fd,path,&value.identity)
+        && EVP_DigestFinal_ex(full,value.digest,&length)==1 && length==32;
+    if(keep) ok=ok && EVP_DigestFinal_ex(inner,value.inner_digest,&length)==1 && length==32;
+    EVP_MD_CTX_free(full); EVP_MD_CTX_free(inner);
+    if(!ok) goto fail;
+    if(keep) value.bytes[value.length]=0;
+    verified[verified_count]=value;
+    return &verified[verified_count++];
+fail:
+    if(value.fd>=0) close(value.fd);
+    free(value.path); free(value.bytes); return NULL;
+}
+static int verified_absent(const char *path) {
+    struct stat st;
+    if(verified_count>=130 || lstat(path,&st)==0 || errno!=ENOENT) return 0;
+    char *copy=strdup(path);
+    if(!copy) return 0;
+    struct verified_file value={0}; value.path=copy; value.fd=-1;
+    verified[verified_count++]=value; return 1;
 }
 static int join(char out[PATH_MAX],const char *base,const char *tail) {
     int n=snprintf(out,PATH_MAX,"%s/%s",base,tail);
@@ -147,14 +271,18 @@ static int valid_utf8(const unsigned char *p,size_t n) {
 static int select_asset(const char *root,const char *query,char path[PATH_MAX],uint32_t *width,uint32_t *height) {
     char index[PATH_MAX], catalog[PATH_MAX]; size_t n=0;
     if(!join(index,root,"selection.v3.idx") || !join(catalog,root,"catalog.json")) return 0;
-    unsigned char *b=read_file(index,&n,MAX_BYTES,1), digest[32];
+    struct verified_file *snapshot=verified_dependency(index,1);
+    unsigned char *b=snapshot?snapshot->bytes:NULL;
+    if(snapshot) n=snapshot->length;
     int ok=0;
     if(!b) return 0;
     if(n<104 || memcmp(b,"RTFXIDX3",8) || u32(b+8)!=3) goto end;
     uint32_t count=u32(b+12);
     uint64_t records=u64(b+48), metadata=u64(b+56), keys=u64(b+64);
     if(!count || count>1000000 || records!=(uint64_t)44*count || records>n-104 || metadata>n-104-records || keys!=n-104-records-metadata) goto end;
-    if(!sha(b,n-32,digest) || memcmp(digest,b+n-32,32) || !file_digest(catalog,digest) || memcmp(digest,b+16,32)) goto end;
+    struct verified_file *catalog_snapshot=verified_dependency(catalog,0);
+    if(memcmp(snapshot->inner_digest,b+n-32,32) || !catalog_snapshot
+            || memcmp(catalog_snapshot->digest,b+16,32)) goto end;
     for(uint32_t i=0;i<eligible_count;i++) if(u32(eligible_bytes+4*(size_t)i)>=count) goto end;
     for(uint32_t i=0;i<count;i++) {
         const unsigned char *record=b+72+(size_t)i*44;
@@ -194,7 +322,7 @@ static int select_asset(const char *root,const char *query,char path[PATH_MAX],u
     if(!join(path,root,relative) || !safe_path(path)) goto end;
     *width=u32(record+32); *height=u32(record+36); ok=1;
 end:
-    free(b); return ok;
+    return ok;
 }
 static int gif_size(const char *path,uint32_t *w,uint32_t *h) {
     int fd=open(path,O_RDONLY|O_NONBLOCK); unsigned char header[10]; struct stat st;
@@ -238,22 +366,49 @@ static int current_fastfetch(char resolved[PATH_MAX]) {
     }
     free(copy); return found;
 }
+struct layout_candidate { uint32_t mode, rows, columns; };
+static struct layout_candidate layouts[64];
+static uint32_t layout_count=0, layout_position=0, layout_horizontal=0;
+static int profile_v2=0, v2_present=0;
+static int layout_padding(int columns,int display_width,int display_height) {
+    uint32_t position=layout_position;
+    if(position==3) position=columns-display_width-(int)layout_horizontal>=32?0:2;
+    if(position==2) return -1;
+    int information=columns-display_width-(int)layout_horizontal;
+    if(information<1) information=1;
+    for(uint32_t i=0;i<layout_count;i++) {
+        if(layouts[i].mode==1 && layouts[i].columns!=(uint32_t)information) continue;
+        int delta=(int)layouts[i].rows-display_height;
+        return delta>0?delta/2:0;
+    }
+    return -1;
+}
 static int profile(const char *root,int columns,int rows,double cw,double ch,int *supported,int *padding) {
     char path[PATH_MAX]; size_t n=0;
-    if(!join(path,root,"native-runtime.v1.bin")) return 0;
+    if(!join(path,root,"native-runtime.v3.bin")) return 0;
+    struct stat present;
+    int v3=lstat(path,&present)==0 || errno!=ENOENT;
+    if(!v3 && !join(path,root,"native-runtime.v2.bin")) return 0;
+    int v2=v3 || lstat(path,&present)==0 || errno!=ENOENT;
+    v2_present=v2;
+    if(!v2 && !join(path,root,"native-runtime.v1.bin")) return 0;
     unsigned char *b=read_file(path,&n,MAX_BYTES,1), digest[32];
     if(!b) return 0;
     int ok=0; size_t pos=56;
-    if(n<88 || memcmp(b,"RTFXNAT1",8) || u32(b+8)!=1 || !sha(b,n-32,digest) || memcmp(digest,b+n-32,32)) goto end;
+    if(n<88 || memcmp(b,v3?"RTFXNAT3":v2?"RTFXNAT2":"RTFXNAT1",8) || u32(b+8)!=(v3?3u:v2?2u:1u)
+            || !sha(b,n-32,digest) || memcmp(digest,b+n-32,32)) goto end;
     uint32_t envs=u32(b+12), deps=u32(b+16), count=u32(b+20);
-    if(envs>4096 || deps>128 || !count || count>1000000 || u32(b+24)!=(uint32_t)columns || u32(b+28)!=(uint32_t)rows) goto end;
+    if(envs>4096 || deps>128 || !count || count>1000000) goto end;
+    if(v2) {
+        if(u32(b+24)>64 || u32(b+28)>3 || u64(b+32) || u64(b+40) || u32(b+52)>20000) goto end;
+    } else if(u32(b+24)!=(uint32_t)columns || u32(b+28)!=(uint32_t)rows) goto end;
     uint64_t bits=u64(b+32); double expected_cw, expected_ch;
     memcpy(&expected_cw,&bits,8); bits=u64(b+40); memcpy(&expected_ch,&bits,8);
-    if(expected_cw!=cw || expected_ch!=ch || u32(b+48)>1) goto end;
+    if((!v2 && (expected_cw!=cw || expected_ch!=ch)) || u32(b+48)>1) goto end;
     uint32_t pad=u32(b+52);
-    if(pad!=UINT32_MAX && pad>10000) goto end;
+    if(!v2 && pad!=UINT32_MAX && pad>10000) goto end;
     size_t actual_envs=0;
-    for(size_t i=0;environment_keys[i];i++) if(getenv(environment_keys[i])) actual_envs++;
+    for(size_t i=0;environment_keys[i];i++) if((!v3 || strcmp(environment_keys[i],"PATH")) && getenv(environment_keys[i])) actual_envs++;
     if(actual_envs!=envs) goto end;
     char executable[PATH_MAX];
     int resolved_executable=current_fastfetch(executable), bound_executable=0;
@@ -262,7 +417,7 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
         char *key=NULL,*value=NULL;
         if(!take_string(b,n-32,&pos,&key,0) || !take_string(b,n-32,&pos,&value,1)) { free(key); free(value); free(previous); goto end; }
         const char *current=getenv(key);
-        int valid=environment_key(key) && current && !strcmp(current,value) && (!previous || strcmp(previous,key)<0);
+        int valid=environment_key(key) && (!v3 || strcmp(key,"PATH")) && current && !strcmp(current,value) && (!previous || strcmp(previous,key)<0);
         free(previous); previous=key; free(value);
         if(!valid) { free(previous); goto end; }
     }
@@ -270,13 +425,24 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
     for(uint32_t i=0;i<deps;i++) {
         char *file=NULL;
         if(!take_string(b,n-32,&pos,&file,0)) goto end;
-        if(file[0]!='/' || n-32-pos<73 || b[pos]>1) { free(file); goto end; }
+        char *expected_canonical=NULL;
+        if(v3 && !take_string(b,n-32,&pos,&expected_canonical,0)) { free(file); goto end; }
+        if(file[0]!='/' || n-32-pos<(v3?41u:73u) || b[pos]>1) { free(file); free(expected_canonical); goto end; }
         int exists=b[pos++], valid;
-        if(exists) valid=file_digest(file,digest) && !memcmp(digest,b+pos,32);
-        else { struct stat st; valid=lstat(file,&st)!=0 && errno==ENOENT; }
-        pos+=32;
-        struct stat identity;
+        struct verified_file *v=NULL;
         if(exists) {
+            v=verified_dependency(file,!strcmp(file,verified_index));
+            valid=v && !memcmp(v->digest,b+pos,32);
+        } else valid=verified_absent(file);
+        pos+=32;
+        if(v3) {
+            char canonical[PATH_MAX];
+            if(exists) {
+                if(!v || !realpath(file,canonical) || strcmp(canonical,expected_canonical)
+                        || (uint64_t)v->identity.st_size!=u64(b+pos)) valid=0;
+            } else if(u64(b+pos) || expected_canonical[0]!='/') valid=0;
+        } else if(exists) {
+            struct stat identity;
             if(stat(file,&identity)) valid=0;
             else {
                 uint64_t expected[5]={(uint64_t)identity.st_dev,(uint64_t)identity.st_ino,(uint64_t)identity.st_size,
@@ -289,16 +455,30 @@ static int profile(const char *root,int columns,int rows,double cw,double ch,int
             char canonical[PATH_MAX];
             if(realpath(file,canonical) && !strcmp(canonical,executable)) bound_executable=1;
         }
-        free(file); pos+=40;
+        free(expected_canonical); free(file); pos+=v3?8u:40u;
         if(!valid) goto end;
     }
     if(u32(b+48) && !bound_executable) goto end;
+    if(resolved_executable) strcpy(verified_executable,executable);
+    if(v2) {
+        uint32_t candidates=u32(b+24);
+        if((uint64_t)candidates*12>n-32-pos) goto end;
+        for(uint32_t i=0;i<candidates;i++) {
+            uint32_t mode=u32(b+pos), reference=u32(b+pos+4), information=u32(b+pos+8);
+            if(mode>1 || !reference || reference>10000
+                    || (mode==0 && information) || (mode==1 && (!information || information>65535))) goto end;
+            layouts[i]=(struct layout_candidate){mode,reference,information}; pos+=12;
+        }
+    }
     if((uint64_t)count*4!=n-32-pos) goto end;
     for(uint32_t i=0;i<count;i++) if(u32(b+pos+4*(size_t)i)>=1000000 || (i && u32(b+pos+4*(size_t)(i-1))>=u32(b+pos+4*(size_t)i))) goto end;
     eligible_bytes=malloc((size_t)count*4);
     if(!eligible_bytes) goto end;
     memcpy(eligible_bytes,b+pos,(size_t)count*4); eligible_count=count;
-    *supported=(int)u32(b+48); *padding=pad==UINT32_MAX?-1:(int)pad; ok=1;
+    if(v2) {
+        profile_v2=1; layout_count=u32(b+24); layout_position=u32(b+28); layout_horizontal=pad;
+    }
+    *supported=(int)u32(b+48); *padding=v2 || pad==UINT32_MAX?-1:(int)pad; ok=1;
 end:
     free(b); return ok;
 }
@@ -359,7 +539,12 @@ int main(int argc,char **argv) {
         if(!expanded(data,getenv("RETROFETCH_DATA_DIR"))) return fallback(argv);
     } else if(!xdg(temp,"XDG_DATA_HOME",".local/share") || !join(data,temp,"retrofetch")) return fallback(argv);
     int supported=0,padding=-1,has_profile=0;
-    if(realpath(data,root)) has_profile=profile(root,columns,rows,cw,ch,&supported,&padding);
+    if(realpath(data,root) && join(verified_index,root,"selection.v3.idx"))
+        has_profile=profile(root,columns,rows,cw,ch,&supported,&padding);
+    if(!has_profile) {
+        verification_clear();
+        if(v2_present) return fallback(argv);
+    }
     if(config_exists() && !has_profile) return fallback(argv);
     if(!animation && (!has_profile || !supported || custom_size)) return fallback(argv);
     char path[PATH_MAX]; uint32_t expected_w=0,expected_h=0;
@@ -380,6 +565,13 @@ int main(int argc,char **argv) {
     if(bh>rows-2) bh=rows-2;
     double scale=fmin(1,fmin(bw*cw/width,bh*ch/height));
     int display_width=(int)(width*scale/cw);
+    if(!verification_valid()) return fallback(argv);
+    if(*verified_executable) {
+        char current[PATH_MAX];
+        if(!current_fastfetch(current) || strcmp(current,verified_executable)) return fallback(argv);
+    }
+    verification_clear();
+    free(eligible_bytes); eligible_bytes=NULL; eligible_count=0;
     char window[128];
     if(animation) {
         int px=(int)(bw*cw),py=(int)(bh*ch);
@@ -395,6 +587,12 @@ int main(int argc,char **argv) {
     }
     double pixels=display_width?display_width*cw:fmin(width,bh*ch*width/height);
     if(fmin(pixels,pixels*height/width)<1) return fallback(argv);
+    if(profile_v2) {
+        double visible_height=ceil(pixels*height/width/ch);
+        if(!isfinite(visible_height) || visible_height>INT_MAX) return fallback(argv);
+        int display_height=visible_height<1?1:(int)visible_height;
+        padding=layout_padding(columns,display_width,display_height);
+    }
     char dw[32],dh[32],pad[32];
     snprintf(dw,sizeof dw,"%d",display_width);
     snprintf(dh,sizeof dh,"%d",!display_width && height>bh*ch?bh:0);

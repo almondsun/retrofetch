@@ -16,7 +16,7 @@ from contextlib import ExitStack
 from .acquire import acquire_source
 from .rendering import supports_animation
 
-MANAGED = "# Managed by Retrofetch installer v1"
+from .python_launcher import MANAGED, launcher_text
 PACKAGE_MARKER = ".retrofetch-install.json"
 
 
@@ -229,9 +229,7 @@ def _install(prefix, data_dir, *, source, cache_dir, progress, state):
         source_package = Path(__file__).resolve().parent
         shutil.copytree(source_package, new_package / "retrofetch", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         (new_package / PACKAGE_MARKER).write_text(json.dumps({"managed_by": "retrofetch", "version": 1}) + "\n")
-        new_launcher.write_text("#!/usr/bin/env python3\n" + MANAGED + "\nimport sys\n"
-                                f"sys.path.insert(0, {str(package)!r})\n"
-                                "from retrofetch.cli import main\nraise SystemExit(main())\n")
+        new_launcher.write_text(launcher_text(package))
         new_launcher.chmod(0o755)
         # Only probe after complete asset verification, into private staging.
         if state.exists():

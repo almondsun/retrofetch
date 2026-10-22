@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 
 OWNER = 'retrofetch-runtime'
-VERSION = 1
+VERSION = 2
 
 
 def _path(state_file):
@@ -20,16 +20,9 @@ def _safe(path):
     return not any(p.is_symlink() for p in (path, *path.parents))
 
 
-def _identity():
-    executable = shutil.which('fastfetch')
-    if executable is None:
-        raise ValueError('Fastfetch executable is unavailable')
-    path = Path(executable).resolve(strict=True)
-    stat = path.stat()
-    if not path.is_file():
-        raise ValueError('Fastfetch executable is not a regular file')
-    return [str(path), stat.st_dev, stat.st_ino, stat.st_size,
-            stat.st_mtime_ns, stat.st_ctime_ns]
+def _identity(*, legacy=False):
+    from .executable_identity import executable_identity
+    return executable_identity(shutil.which('fastfetch'), legacy=legacy)
 
 
 def _read(path):
@@ -37,7 +30,7 @@ def _read(path):
         raise ValueError('Unrecognized runtime capability state')
     document = json.loads(path.read_text())
     if (not isinstance(document, dict) or document.get('owner') != OWNER
-            or document.get('version') != VERSION
+            or (type(document.get('version')) is not int or document.get('version') not in (1, VERSION))
             or type(document.get('supported')) is not bool):
         raise ValueError('Unrecognized runtime capability state')
     return document
@@ -47,7 +40,7 @@ def cached_capabilities(*, state_file=None):
     """Return bool for an exact binary identity, or None without writing/probing."""
     try:
         document = _read(_path(state_file))
-        return document['supported'] if document.get('executable') == _identity() else None
+        return document['supported'] if document.get('executable') == _identity(legacy=document['version'] == 1) else None
     except (OSError, ValueError, TypeError):
         return None
 
@@ -60,11 +53,14 @@ def refresh_capabilities(*, state_file=None):
     path = _path(state_file)
     if not _safe(path):
         raise ValueError('Runtime capability state must not use symlinks')
-    if path.exists():
+    previous = path.read_bytes() if path.exists() else None
+    if previous is not None:
         _read(path)
     identity = _identity()
+    local_identity = _identity(legacy=True)
     supported = supports_animation()
-    if type(supported) is not bool or _identity() != identity:
+    if (type(supported) is not bool or _identity() != identity
+            or _identity(legacy=True) != local_identity):
         raise ValueError('Fastfetch executable changed during capability refresh')
     document = {'owner': OWNER, 'version': VERSION,
                 'executable': identity, 'supported': supported}
@@ -76,8 +72,8 @@ def refresh_capabilities(*, state_file=None):
             stream.write('\n')
         if not _safe(path):
             raise ValueError('Runtime capability state changed during refresh')
-        if path.exists():
-            _read(path)
+        if (path.read_bytes() if path.exists() else None) != previous:
+            raise ValueError('Runtime capability state changed during refresh')
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
