@@ -71,10 +71,11 @@ def _snapshots(files):
     return values
 
 
-def _key(config, files):
-    executable = shutil.which('fastfetch')
-    binary = Path(executable).resolve(strict=True) if executable else None
-    stat = binary.stat() if binary else None
+def _key(config, files, *, legacy=False, executable=None):
+    from .executable_identity import executable_identity
+    if executable is None:
+        selected = shutil.which('fastfetch')
+        executable = executable_identity(selected, legacy=legacy) if selected else None
     return {'config': str(Path(config).expanduser().absolute()) if config not in (None, 'none') else config,
             'environment': {name: os.environ.get(name) for name in
                             ('HOME', 'XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS', 'TERM',
@@ -82,8 +83,7 @@ def _key(config, files):
             # Fastfetch tests presence, not truthiness, of NO_COLOR.
             'no_color': 'NO_COLOR' in os.environ, 'no_config': 'NO_CONFIG' in os.environ,
             'profile': [2, 160, 160], 'files': _snapshots(files),
-            'executable': [str(binary), stat.st_dev, stat.st_ino, stat.st_size,
-                           stat.st_mtime_ns, stat.st_ctime_ns] if stat else None}
+            'executable': executable}
 
 
 def _logo_options(files):
@@ -212,7 +212,7 @@ def _read_state(path):
     if not isinstance(document, dict) or document.get('owner') != OWNER:
         raise ValueError('Refusing to replace unrecognized calibration state')
     version = document.get('version')
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3):
         raise ValueError('Unrecognized calibration version')
     if version == 1:
         if (not isinstance(document.get('key'), dict)
@@ -282,9 +282,11 @@ def _calibrate_locked(config=None, size=None, *, geometry=None, state_file=None,
     previous, previous_raw = _read_state(path)
     files = _config_files(config)
     key = _key(config, files)
+    legacy_key = _key(config, files, legacy=True)
     position, columns = _information_area(files, geometry, size)
-    backup = _safe_state(path.with_name(path.name + '.v1.bak'))
-    if previous and previous['version'] == 1 and backup.exists():
+    legacy_version = previous['version'] if previous and previous['version'] < 3 else None
+    backup = _safe_state(path.with_name(path.name + f'.v{legacy_version}.bak'))
+    if legacy_version is not None and backup.exists():
         if not backup.is_file() or backup.stat().st_size > MAX_STATE_BYTES or backup.read_bytes() != previous_raw:
             raise ValueError('Refusing to replace an unrelated legacy calibration backup')
     rows = _measure(config, columns, geometry)
@@ -292,11 +294,11 @@ def _calibrate_locked(config=None, size=None, *, geometry=None, state_file=None,
         raise ValueError('Calibration did not produce a bounded information block')
     profile = {'mode': layout_mode, 'key': key, 'reference_rows': rows,
                'information_columns': columns if layout_mode == 'width-sensitive' else None}
-    profiles = previous['profiles'] if previous and previous['version'] == 2 else []
+    profiles = previous['profiles'] if previous and previous['version'] == 3 else []
     # The most recently calibrated compatible contract wins, with bounded history.
     profiles = [item for item in profiles if not (item['mode'] == layout_mode
                 and item['key'] == key and item['information_columns'] == profile['information_columns'])]
-    document = {'owner': OWNER, 'version': 2, 'profiles': (profiles + [profile])[-MAX_PROFILES:]}
+    document = {'owner': OWNER, 'version': 3, 'profiles': (profiles + [profile])[-MAX_PROFILES:]}
     encoded = (json.dumps(document) + '\n').encode()
     if len(encoded) > MAX_STATE_BYTES:
         raise ValueError('Calibration state exceeds limit; remove obsolete profiles explicitly')
@@ -305,13 +307,14 @@ def _calibrate_locked(config=None, size=None, *, geometry=None, state_file=None,
     try:
         with os.fdopen(fd, 'wb') as stream:
             stream.write(encoded)
-        if _key(config, files) != key:
+        if (_key(config, files) != key
+                or _key(config, files, legacy=True) != legacy_key):
             raise ValueError('Configuration changed during calibration')
         _safe_state(path)
         _, current_raw = _read_state(path)
         if current_raw != previous_raw:
             raise ValueError('Calibration state changed during measurement')
-        if previous and previous['version'] == 1 and not backup.exists():
+        if legacy_version is not None and not backup.exists():
             _safe_state(backup)
             with backup.open('xb') as stream:
                 stream.write(previous_raw)
@@ -322,20 +325,87 @@ def _calibrate_locked(config=None, size=None, *, geometry=None, state_file=None,
             'layout_mode': layout_mode, 'state_file': str(path)}
 
 
+def migrate_layout_state(*, state_file=None):
+    """Explicitly migrate proven v2 contracts, or require recalibration unchanged.
+
+    No measurements run here. A stale contract must be calibrated explicitly in
+    its existing mode; it cannot be made trustworthy merely by hashing today.
+    """
+    path = _safe_state(Path(state_file) if state_file is not None else _state_file())
+    document, raw = _read_state(path)
+    if document is None or document['version'] == 3:
+        return {'profiles': len(document['profiles']) if document else 0,
+                'state_file': str(path), 'migrated': False}
+    if document['version'] != 2:
+        raise ValueError('Explicit recalibration is required for legacy layout state')
+    lock_path = _safe_state(path.with_name(path.name + '.lock'))
+    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, 'a') as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise ValueError('Calibration lock must be a regular file')
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError('Another calibration is running') from error
+        profiles = []
+        checks = []
+        for profile in document['profiles']:
+            old = profile['key']
+            files = [item[0] for item in old['files']]
+            config = old.get('config')
+            if _key(config, files, legacy=True) != old:
+                raise ValueError('Explicit recalibration is required for stale layout contracts')
+            key = _key(config, files)
+            # Recheck legacy evidence after hashing; content alone cannot justify
+            # migration from a metadata-only historical contract.
+            if _key(config, files, legacy=True) != old:
+                raise ValueError('Configuration changed during layout migration')
+            profiles.append({**profile, 'key': key})
+            checks.append((config, files, old, key))
+        encoded = (json.dumps({'owner': OWNER, 'version': 3, 'profiles': profiles}) + '\n').encode()
+        if len(encoded) > MAX_STATE_BYTES:
+            raise ValueError('Calibration state exceeds limit')
+        backup = _safe_state(path.with_name(path.name + '.v2.bak'))
+        if backup.exists() and (not backup.is_file() or backup.read_bytes() != raw):
+            raise ValueError('Refusing to replace an unrelated legacy calibration backup')
+        fd, temporary = tempfile.mkstemp(prefix='.layout-', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(encoded)
+            for config, files, old, key in checks:
+                if _key(config, files, legacy=True) != old or _key(config, files) != key:
+                    raise ValueError('Configuration changed during layout migration')
+            if _read_state(path)[1] != raw:
+                raise ValueError('Calibration state changed during migration')
+            if not backup.exists():
+                with backup.open('xb') as stream:
+                    stream.write(raw)
+            _safe_state(path)
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    return {'profiles': len(profiles), 'state_file': str(path), 'migrated': True}
+
+
 def layout_padding(config, size, geometry, display_height, *, state_file=None):
     """Read compatible profiles without executing modules or writing state."""
     path = Path(state_file) if state_file is not None else _state_file()
     try:
         document, _ = _read_state(path)
-        if document is None or document['version'] != 2:
+        if document is None or document['version'] not in (2, 3):
             return None  # Never promote a version-1 snapshot into a new contract.
+        from .executable_identity import executable_identity
+        selected = shutil.which('fastfetch')
+        executable = (executable_identity(selected, legacy=document['version'] == 2)
+                      if selected else None)
         current_keys = {}
         for profile in reversed(document['profiles']):
             key = profile['key']
             files = [record[0] for record in key['files']]
             identity = tuple(files)
             if identity not in current_keys:
-                current_keys[identity] = _key(config, files)
+                current_keys[identity] = _key(config, files, legacy=document['version'] == 2,
+                                              executable=executable)
             if current_keys[identity] != key:
                 continue
             position, columns = _information_area(files, geometry, size)
@@ -359,8 +429,12 @@ def layout_contracts(config=None, *, state_file=None):
     path = Path(state_file) if state_file is not None else _state_file()
     try:
         document, _ = _read_state(path)
-        if document is None or document['version'] != 2:
+        if document is None or document['version'] not in (2, 3):
             return 0, 0, []
+        from .executable_identity import executable_identity
+        selected = shutil.which('fastfetch')
+        executable = (executable_identity(selected, legacy=document['version'] == 2)
+                      if selected else None)
         current_keys = {}
         candidates = []
         placement = None
@@ -370,7 +444,8 @@ def layout_contracts(config=None, *, state_file=None):
             files = [record[0] for record in key['files']]
             identity = tuple(files)
             if identity not in current_keys:
-                current_keys[identity] = _key(config, files)
+                current_keys[identity] = _key(config, files, legacy=document['version'] == 2,
+                                              executable=executable)
             if current_keys[identity] != key:
                 continue
             position, padding = _logo_options(files)

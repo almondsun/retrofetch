@@ -37,6 +37,44 @@ class RuntimeCacheTests(unittest.TestCase):
             self.assertIs(cached_capabilities(state_file=self.state), True)
         self.assertEqual(self.state.read_bytes(), before)
 
+    def test_content_identity_survives_metadata_only_replacement(self):
+        self.refresh()
+        original = self.binary.read_bytes()
+        replacement = self.binary.with_suffix('.new')
+        replacement.write_bytes(original)
+        replacement.replace(self.binary)
+        self.assertIs(cached_capabilities(state_file=self.state), True)
+        self.assertEqual(json.loads(self.state.read_text())['version'], 2)
+
+    def test_legacy_reader_and_unknown_version_refusal(self):
+        from retrofetch.runtime_cache import _identity
+        self.state.parent.mkdir()
+        document = dict(owner='retrofetch-runtime', version=1, supported=True,
+                        executable=_identity(legacy=True))
+        self.state.write_text(json.dumps(document))
+        before = self.state.read_bytes()
+        self.assertIs(cached_capabilities(state_file=self.state), True)
+        self.assertEqual(self.state.read_bytes(), before)
+        self.refresh()
+        self.assertEqual(json.loads(self.state.read_text())['version'], 2)
+        document['version'] = 99
+        self.state.write_text(json.dumps(document))
+        before = self.state.read_bytes()
+        with self.assertRaises(ValueError):
+            self.refresh()
+        self.assertEqual(self.state.read_bytes(), before)
+
+    def test_same_content_replacement_during_probe_rejected(self):
+        def replace():
+            replacement = self.binary.with_suffix('.new')
+            replacement.write_bytes(self.binary.read_bytes())
+            replacement.replace(self.binary)
+            return True
+        with patch('retrofetch.rendering.supports_animation', side_effect=replace):
+            with self.assertRaises(ValueError):
+                refresh_capabilities(state_file=self.state)
+        self.assertFalse(self.state.exists())
+
     def test_changed_binary_invalidates_cache(self):
         self.refresh()
         self.binary.write_bytes(b'build-two')
