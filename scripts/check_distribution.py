@@ -8,6 +8,7 @@ import zipfile
 REQUIRED_MODULES = {
     'retrofetch/cli.py', 'retrofetch/native_install.py',
     'retrofetch/native_profile.py', 'retrofetch/selection_v3.py',
+    'retrofetch/executable_identity.py', 'retrofetch/python_launcher.py',
 }
 REQUIRED_NATIVE = {'native/retrofetch.c', 'scripts/build_native.py'}
 
