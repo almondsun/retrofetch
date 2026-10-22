@@ -151,7 +151,7 @@ class NativeProfileTests(unittest.TestCase):
             config.write_text(json.dumps({'logo': {'position': position}}))
         profiles = [dict(key={'files': [[str(config), 'digest']]}, mode='fixed-height',
                          reference_rows=20, information_columns=None) for config in configs]
-        def key_for_files(config, files):
+        def key_for_files(config, files, **kwargs):
             return {'files': [[files[0], 'digest']]}
         with mock.patch('retrofetch.calibration._read_state', return_value=({'version': 2, 'profiles': profiles}, b'')), \
                 mock.patch('retrofetch.calibration._key', side_effect=key_for_files):
