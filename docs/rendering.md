@@ -56,7 +56,7 @@ is recomputed for the current terminal, including cell pixels and available rows
 Existing horizontal padding and native left/right/top placement remain Fastfetch's.
 Auto placement is reevaluated at the current width; top receives no side offset.
 
-Version-2 state retains up to 64 recent profiles. Width-sensitive profiles match
+Current version-3 state retains up to 64 recent profiles. Width-sensitive profiles match
 terminal columns minus the current logo columns and horizontal padding; top uses
 the full terminal width. Different size/font combinations leaving the same
 information width can reuse the measurement. The newest compatible profile wins;
@@ -72,9 +72,13 @@ creates profiles, or writes state. Current viewport rows are not a reference-hei
 invalidator: a height-sensitive custom command is outside the fixed-height contract
 and requires recalibration even if its configuration bytes are unchanged.
 
-Known owned version-1 state is not reused as either new contract. The first explicit
-recalibration preserves its exact bytes in `layout.json.v1.bak` before publishing
-version 2; an unrelated backup or unrecognized state causes a refusal. State reads
+Known owned version-1 state requires explicit recalibration. Recalibration from
+version 1 or 2 preserves its exact bytes in `layout.json.v1.bak` or
+`layout.json.v2.bak`, respectively, before publishing version 3. Native refresh
+can reuse compatible saved contracts without rewriting or migrating `layout.json`;
+stale contracts require recalibration in their previous layout mode. Separate
+explicit maintenance can use the existing migration helper described below.
+An unrelated backup or unrecognized state causes a refusal. State reads
 and writes are bounded; explicit calibration takes a nonblocking writer lock,
 preventing concurrent profile loss without adding startup locking. Profile
 publication is atomic and refuses symlink state

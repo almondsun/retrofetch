@@ -74,6 +74,28 @@ libraries are rejected. A local `--source` avoids downloading, the acceptance
 prompt, and the download-space check.
 The installer neither deletes `temp/` nor removes any source collection.
 
+## Upgrading an existing installation
+
+The installer is a **full preparation workflow**, not a code-only updater.
+It prepares and validates a fresh library before publishing an upgrade, even
+when a prepared library already exists. Reusing the download cache or passing
+`--source` can avoid downloads; neither skips import, normalization or indexing.
+Allow the preparation time and staging/rollback space described above.
+
+There is no installer option that upgrades code while retaining the prepared
+library untouched. Do not work around this by copying package files into the
+managed prefix or installing a wheel over its private package directory; those
+operations do not coordinate the managed launchers and ownership metadata.
+If the installed runtime already matches the desired release, no reinstall or
+refresh is needed solely because its release was published.
+
+For a native-managed installation, retain the working installation and rollback
+files. The [native setup](rendering.md#optional-v3native-acceleration) describes
+explicit frontend activation over an existing managed Python installation; it
+is not a code-only package updater. Runtime/profile refresh commands prepare
+indexes and compatibility state, not application code. Do not remove ownership
+guards or overwrite a native launcher to force an upgrade past a refusal.
+
 ## Optional terminal startup
 
 After installation, explicitly copy/source the appropriate guarded example from
@@ -117,13 +139,17 @@ installing the managed Python package. Its explicit activation command sets
 
 Run `retrofetch --refresh-runtime` to prepare v2/v3 indexes and capabilities,
 then `retrofetch --refresh-native` in the target Kitty terminal. Neither command
-reimports or converts animation assets. Native profiles bind the environment,
+reimports or converts animation assets. Neither command rewrites or migrates
+`layout.json`; native refresh can reuse compatible saved calibration. Layout
+migration uses separate explicit maintenance, not either refresh command.
+Native profiles bind the environment,
 settings, dependencies and compatible layout contracts. Current v3 profiles use
 content-bound executable identities and calculate placement from current terminal
 geometry; legacy v2/v1 profiles remain readable. Runtime capabilities use state
-v2 and calibration uses layout state v3. Explicit maintenance migrates compatible
-legacy calibration only when its identities still prove validity; otherwise
-repeat calibration in the previous layout mode. Startup never migrates state. Stale or unsupported profiles
+v2 and calibration uses layout state v3. Separate explicit maintenance can use
+`retrofetch.calibration.migrate_layout_state()` for proven-compatible version-2
+calibration; version-1 or stale state requires recalibration in the previous
+layout mode. Startup never migrates state. Stale or unsupported profiles
 preserve Python playback rather than silently changing configuration or layout.
 
 Native activation preserves the Python companion and validates managed ownership.
